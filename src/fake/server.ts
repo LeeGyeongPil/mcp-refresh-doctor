@@ -19,6 +19,11 @@ export interface FakeServerOptions {
   log?: (line: string) => void;
   /** 시험용: 발급한 비밀 값 원문을 모아 둔다(가림 검사용). 기본 꺼짐 */
   trackSecrets?: boolean;
+  /**
+   * 시험용 고장 주입: true 를 돌려준 요청은 응답 없이 연결을 끊는다(네트워크 오류 재현).
+   * n 은 같은 "메서드 경로" 요청의 순번(1부터). 기본 없음.
+   */
+  dropConnection?: (request: { method: string; path: string; n: number }) => boolean;
 }
 
 export interface FakeServer {
@@ -48,6 +53,8 @@ export async function startFakeServer(opts: FakeServerOptions): Promise<FakeServ
   const accessTokens = new Map<string, AccessRecord>();
   const refreshTokens = new Map<string, RefreshRecord>();
   const sessions = new Set<string>();
+  // dropConnection 을 쓸 때만 채운다(키 = "메서드 경로", 시험용이라 경로 수만큼만 생긴다)
+  const requestCounts = new Map<string, number>();
 
   let base = '';
   const mcpPath = '/mcp';
@@ -105,6 +112,18 @@ export async function startFakeServer(opts: FakeServerOptions): Promise<FakeServ
     const path = url.pathname;
     const method = req.method ?? 'GET';
     const done = (status: number, note = ''): void => log(`${method} ${path}${note ? ' ' + note : ''} -> ${status}`);
+
+    // 시험용 고장 주입(dropConnection): 응답 없이 연결을 끊어 클라이언트가 네트워크 오류를 겪게 한다.
+    if (opts.dropConnection) {
+      const key = `${method} ${path}`;
+      const n = (requestCounts.get(key) ?? 0) + 1;
+      requestCounts.set(key, n);
+      if (opts.dropConnection({ method, path, n })) {
+        log(`${method} ${path} -> connection dropped (test fault)`);
+        req.socket.destroy();
+        return;
+      }
+    }
 
     // 보호 자원 메타데이터(RFC 9728)
     if (method === 'GET' && (path === `/.well-known/oauth-protected-resource${mcpPath}` || path === '/.well-known/oauth-protected-resource')) {

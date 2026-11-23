@@ -110,6 +110,7 @@ serve 옵션:
   'skip.c15_not_requested': '건너뜀: 실제 만료까지 기다리려면 --wait-expiry',
   'skip.c15_no_expires_in': '건너뜀: 기다릴 expires_in 이 없음',
   'skip.c15_too_long': '건너뜀: 만료까지 {seconds}초(--max-wait 초과)',
+  'skip.no_response': '서버 응답 없음({error}) — 서버 결함의 증거가 아님',
 
   // ── 진행 불가(판정 불가) 이유 ───────────────────────────────────────
   'blocked.network': '{url} 에 연결하지 못함({error})',
@@ -126,7 +127,9 @@ serve 옵션:
   'blocked.login_denied': '인가 서버가 콜백으로 오류를 돌려줌({error})',
   'blocked.login_state_mismatch': '콜백의 state 가 맞지 않음(오래된 브라우저 탭일 수 있음)',
   'blocked.login_no_code': '콜백에 인가 코드가 없음',
+  'blocked.login_closed': '콜백이 오기 전에 로그인 대기를 멈춤',
   'blocked.callback_port': '{port} 번 포트에 루프백 콜백을 열지 못함({error})',
+  'blocked.no_response': '{check} 요청이 응답을 받지 못함({error}) — 네트워크 실패·시간 초과는 갱신에 대해 아무것도 증명하지 않음',
 
   // ── 고칠 설정 ───────────────────────────────────────────────────────
   'hint.c01_return_401': 'MCP 엔드포인트를 보호하세요: 토큰 없는 요청에는 401 과 Bearer WWW-Authenticate 도전을 돌려줍니다.',
@@ -159,6 +162,7 @@ serve 옵션:
   'hint.blocked.discovery': '발견 단계가 끝나지 않아 갱신에 대해 증명된 것이 없습니다. 주소·네트워크·서버 메타데이터 문서를 확인하세요.',
   'hint.blocked.registration': '등록이 끝나지 않았습니다. --client-id <공개 클라이언트 id> --redirect-port <포트> 로 다시 실행하세요.',
   'hint.blocked.login': '로그인이 끝나지 않았습니다. 출력된 주소를 브라우저로 열어 5분 안에 로그인하세요.',
+  'hint.blocked.tokens': '로그인 뒤 요청이 응답을 받지 못해(네트워크 오류·시간 초과) 남은 검사를 하지 않았습니다. 다시 실행하고, 느린 네트워크라면 --timeout 을 늘리세요.',
   'hint.client_side': '서버 쪽은 갱신 준비가 된 것으로 보입니다. 그래도 재로그인이 반복되면 클라이언트를 확인하세요: 회전된 갱신 토큰을 저장하는지, 갱신 때 resource 를 보내는지, 새 액세스 토큰을 전송 계층에 쓰는지. 이 JSON 보고서를 클라이언트 이슈에 첨부하세요.',
 
   // ── 판정·보고서 ─────────────────────────────────────────────────────
@@ -177,6 +181,7 @@ serve 옵션:
   'stage.discovery': '발견',
   'stage.registration': '등록',
   'stage.login': '로그인',
+  'stage.tokens': '토큰 점검',
   'report.wrote': 'JSON 보고서를 {file} 에 저장했습니다',
 
   // ── 진행 표시(표준 오류) ────────────────────────────────────────────

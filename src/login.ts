@@ -6,7 +6,7 @@ import { isLoopbackHost, request } from './http.js';
 
 export type LoginOutcome =
   | { ok: true; code: string; iss?: string }
-  | { ok: false; reason: 'timeout' | 'denied' | 'state_mismatch' | 'no_code'; error?: string };
+  | { ok: false; reason: 'timeout' | 'closed' | 'denied' | 'state_mismatch' | 'no_code'; error?: string };
 
 export interface CallbackServer {
   redirectUri: string;
@@ -55,7 +55,9 @@ export async function startCallbackServer(port: number, pageText: string): Promi
       });
       try {
         const got = await Promise.race([received, timeout, stopped]);
-        if (got === 'timeout' || got === 'stopped') return { ok: false, reason: 'timeout' };
+        if (got === 'timeout') return { ok: false, reason: 'timeout' };
+        // close() 로 대기를 멈춘 경우 — 시간 초과와 구분해 "로그인 시간 초과"라는 틀린 문구가 나오지 않게 한다.
+        if (got === 'stopped') return { ok: false, reason: 'closed' };
         if (got.get('error')) return { ok: false, reason: 'denied', error: got.get('error') ?? '' };
         if (got.get('state') !== state) return { ok: false, reason: 'state_mismatch' };
         const code = got.get('code');

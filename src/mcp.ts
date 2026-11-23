@@ -1,7 +1,7 @@
 // C08·C12·C13·C15: 액세스 토큰으로 MCP 서버(Streamable HTTP)에 실제로 말을 걸어 본다.
 // initialize → notifications/initialized → tools/list. 응답은 JSON 이거나 SSE 스트림일 수 있다.
 import { bearerChallenge } from './discovery.js';
-import { MAX_BODY_BYTES, asObject, describeError, readLimited } from './http.js';
+import { FRESH_CONNECTION, MAX_BODY_BYTES, asObject, describeError, readLimited } from './http.js';
 import { TOOL_VERSION, type CheckId, type CheckResult } from './types.js';
 
 export const REQUESTED_PROTOCOL_VERSION = '2025-11-25';
@@ -14,6 +14,13 @@ export interface RpcReply {
   /** id 가 맞는 JSON-RPC 응답 메시지 */
   message?: Record<string, unknown>;
   error?: string;
+  /** 상태 줄은 왔지만 본문을 받는 도중 연결이 끊겼다 */
+  incomplete?: boolean;
+}
+
+/** 응답을 끝까지 받지 못했는가(연결 실패·시간 초과·본문 도중 끊김) — 서버 동작의 증거가 아니다 */
+export function rpcNoResponse(r: Pick<RpcReply, 'reached' | 'incomplete'>): boolean {
+  return !r.reached || r.incomplete === true;
 }
 
 interface RpcInput {
@@ -31,6 +38,7 @@ export async function rpc(input: RpcInput): Promise<RpcReply> {
     'content-type': 'application/json',
     accept: 'application/json, text/event-stream',
     authorization: `Bearer ${input.token}`,
+    ...FRESH_CONNECTION, // 요청마다 새 연결(http.ts 설명 참고)
   };
   // 세션 ID·프로토콜 버전은 initialize 이후 요청마다 이어 보내야 한다(MCP Streamable HTTP).
   if (input.sessionId) headers['mcp-session-id'] = input.sessionId;
@@ -60,16 +68,28 @@ export async function rpc(input: RpcInput): Promise<RpcReply> {
     await res.body?.cancel().catch(() => undefined);
     return reply;
   }
+  // 본문 받기(연결 문제)와 해석(서버가 보낸 내용 문제)을 나눈다 — 앞의 것은 서버 결함의 증거가 아니다.
+  const type = res.headers.get('content-type') ?? '';
+  let found: Record<string, unknown> | undefined;
+  let text: string | undefined;
   try {
-    const type = res.headers.get('content-type') ?? '';
-    const found = type.includes('text/event-stream')
-      ? await readSseUntil(res.body, id)
-      : asObject(JSON.parse(await readLimited(res, MAX_BODY_BYTES)));
-    if (found) reply.message = found;
-    else reply.error = 'no_response_message';
+    if (type.includes('text/event-stream')) found = await readSseUntil(res.body, id);
+    else text = await readLimited(res, MAX_BODY_BYTES);
   } catch (err) {
     reply.error = describeError(err);
+    reply.incomplete = true;
+    return reply;
   }
+  if (text !== undefined) {
+    try {
+      found = asObject(JSON.parse(text));
+    } catch (err) {
+      reply.error = describeError(err); // JSON 이 아닌 본문 — 서버가 실제로 보낸 내용이다
+      return reply;
+    }
+  }
+  if (found) reply.message = found;
+  else reply.error = 'no_response_message';
   return reply;
 }
 
@@ -125,6 +145,8 @@ export interface Handshake {
   ok: boolean;
   /** 실패한 단계 */
   step?: 'initialize' | 'initialized' | 'tools/list';
+  /** 그 단계 요청이 응답을 전혀 받지 못했다(네트워크 오류·시간 초과) — 서버 결함의 증거가 아니다 */
+  noResponse?: boolean;
   status: number;
   protocolVersion?: string;
   sessionId?: boolean;
@@ -174,7 +196,10 @@ async function endSession(url: string, token: string, sessionId: string, protoco
   try {
     const res = await fetch(url, {
       method: 'DELETE',
-      headers: { authorization: `Bearer ${token}`, 'mcp-session-id': sessionId, 'mcp-protocol-version': protocolVersion },
+      headers: {
+        authorization: `Bearer ${token}`, 'mcp-session-id': sessionId, 'mcp-protocol-version': protocolVersion,
+        ...FRESH_CONNECTION,
+      },
       signal: AbortSignal.timeout(timeoutMs),
     });
     await res.body?.cancel().catch(() => undefined);
@@ -188,6 +213,7 @@ function failed(step: NonNullable<Handshake['step']>, r: RpcReply): Handshake {
   const error = r.error ?? (typeof rpcError?.message === 'string' ? rpcError.message : `http_${r.status}`);
   return {
     ok: false, step, status: r.status, error,
+    ...(rpcNoResponse(r) ? { noResponse: true } : {}),
     ...(r.wwwAuthenticate ? { wwwAuthenticate: r.wwwAuthenticate } : {}),
   };
 }

@@ -23,8 +23,11 @@ export interface CheckResult {
   evidence?: Record<string, unknown>;
 }
 
-/** 발견·등록·로그인 단계에서 더 진행하지 못한 경우 */
-export type BlockedStage = 'discovery' | 'registration' | 'login';
+/**
+ * 발견·등록·로그인 단계, 또는 로그인 뒤 토큰 점검 중 응답을 받지 못해(네트워크 오류·시간 초과)
+ * 더 진행하지 못한 경우. 응답이 없다는 것은 서버 동작의 증거가 아니므로 판정 불가로 끝낸다.
+ */
+export type BlockedStage = 'discovery' | 'registration' | 'login' | 'tokens';
 export interface Blocked {
   stage: BlockedStage;
   detail: string;
@@ -51,4 +54,4 @@ export interface VerdictResult {
 }
 
 /** package.json 의 version 과 같아야 한다(test/cli.test.ts 가 확인) */
-export const TOOL_VERSION = '0.1.1';
+export const TOOL_VERSION = '0.1.2';

@@ -25,13 +25,20 @@ export interface RequestOptions {
 // 본문은 진단에 필요한 만큼만 읽는다(악의적·고장 서버가 끝없이 보내도 메모리가 터지지 않게).
 export const MAX_BODY_BYTES = 1_000_000;
 
+/**
+ * 요청마다 새 연결을 쓴다(`connection: close`).
+ * 유휴 keep-alive 연결을 다시 쓰면, 서버가 막 닫은 연결에 요청을 실어 "other side closed" 같은
+ * 연결 오류가 날 수 있다. 진단 도구는 토큰 동작만 보아야 하므로 연결 재사용 문제를 판정에 섞지 않는다.
+ */
+export const FRESH_CONNECTION = { connection: 'close' } as const;
+
 export async function request(url: string, opts: RequestOptions): Promise<HttpResult> {
   const empty = new Headers();
   let res: Response;
   try {
     res = await fetch(url, {
       method: opts.method ?? 'GET',
-      headers: opts.headers,
+      headers: { ...opts.headers, ...FRESH_CONNECTION },
       body: opts.body,
       redirect: opts.redirect ?? 'manual',
       signal: AbortSignal.timeout(opts.timeoutMs),
@@ -72,6 +79,14 @@ export async function readLimited(res: Response, limit: number): Promise<string>
     await reader.cancel().catch(() => undefined);
   }
   return out;
+}
+
+/**
+ * 응답을 끝까지 받지 못했는가 — 연결 실패·시간 초과(reached=false)이거나, 상태 줄은 왔지만 본문을 받는 도중 끊김(error).
+ * 이런 결과는 서버 동작의 증거가 아니므로 검사 FAIL 로 쓰지 않는다(checks.ts 의 stopNoResponse).
+ */
+export function noResponse(r: Pick<HttpResult, 'reached' | 'error'>): boolean {
+  return !r.reached || r.error !== undefined;
 }
 
 export function tryJson(text: string): unknown {

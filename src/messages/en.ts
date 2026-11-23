@@ -109,6 +109,7 @@ Exit codes: 0 = server is refresh-ready (client-side cause), 1 = server-side cau
   'skip.c15_not_requested': 'skipped: use --wait-expiry to wait for real expiry',
   'skip.c15_no_expires_in': 'skipped: no expires_in to wait for',
   'skip.c15_too_long': 'skipped: expiry is {seconds}s away (over --max-wait)',
+  'skip.no_response': 'no response from the server ({error}) — not evidence about the server',
 
   // ── blocked (inconclusive) reasons ──────────────────────────────────
   'blocked.network': 'could not reach {url} ({error})',
@@ -125,7 +126,9 @@ Exit codes: 0 = server is refresh-ready (client-side cause), 1 = server-side cau
   'blocked.login_denied': 'the auth server returned an error to the callback ({error})',
   'blocked.login_state_mismatch': 'the callback state did not match (possible stale browser tab)',
   'blocked.login_no_code': 'the callback had no authorization code',
+  'blocked.login_closed': 'the login wait was stopped before a callback arrived',
   'blocked.callback_port': 'could not open the loopback callback on port {port} ({error})',
+  'blocked.no_response': '{check} got no response ({error}); a network failure or timeout proves nothing about refresh',
 
   // ── fix hints ───────────────────────────────────────────────────────
   'hint.c01_return_401': 'Protect the MCP endpoint: answer requests without a token with 401 and a Bearer WWW-Authenticate challenge.',
@@ -158,6 +161,7 @@ Exit codes: 0 = server is refresh-ready (client-side cause), 1 = server-side cau
   'hint.blocked.discovery': 'Discovery did not finish, so nothing was proven about refresh. Check the URL, network and the server metadata documents.',
   'hint.blocked.registration': 'Registration did not finish. Re-run with --client-id <public client id> --redirect-port <port>.',
   'hint.blocked.login': 'Login did not finish. Open the printed URL in a browser and complete the login within 5 minutes.',
+  'hint.blocked.tokens': 'A request after login got no response (network error or timeout), so the remaining checks did not run. Run again; on a slow network raise --timeout.',
   'hint.client_side': 'The server side looks refresh-ready. If users still re-login, check the client: does it store the rotated refresh token, send resource on refresh, and use the new access token on the transport? Attach this JSON report to the client issue.',
 
   // ── verdict & report ────────────────────────────────────────────────
@@ -176,6 +180,7 @@ Exit codes: 0 = server is refresh-ready (client-side cause), 1 = server-side cau
   'stage.discovery': 'discovery',
   'stage.registration': 'registration',
   'stage.login': 'login',
+  'stage.tokens': 'token checks',
   'report.wrote': 'JSON report written to {file}',
 
   // ── progress (stderr) ───────────────────────────────────────────────

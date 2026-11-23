@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import { test } from 'node:test';
 import { runChecks } from '../src/checks.js';
 import { startFakeServer } from '../src/fake/server.js';
+import { startCallbackServer } from '../src/login.js';
 import { CHECK_IDS, type Blocked, type CheckId, type CheckResult, type Status } from '../src/types.js';
 import { SERVER_DECISIVE, decideVerdict } from '../src/verdict.js';
 import { cleanEnv, runCli } from './helpers.js';
@@ -131,6 +132,42 @@ test('engine: busy --redirect-port → inconclusive at login, not a crash', asyn
   }
 });
 
+test('engine: no response after login → inconclusive at token checks, never a server-side verdict', async (t) => {
+  // 서버가 요청을 받자마자 연결을 끊는다(응답 없음). 고치기 전에는 이것이 C06·C09·C08 FAIL 로 적혀
+  // "서버 원인(종료 1)"이라는 틀린 판정이 났다 — 느린 러너에서 연결이 끊긴 e2e 실행에서 실제로 관찰됨.
+  const cases = [
+    { name: 'code exchange (C06)', check: 'C06', method: 'POST', path: '/token', n: 1 },
+    { name: 'first refresh (C09)', check: 'C09', method: 'POST', path: '/token', n: 2 },
+    { name: 'MCP handshake (C08)', check: 'C08', method: 'POST', path: '/mcp', n: 2 }, // 1번째는 C01(토큰 없음)
+  ] as const;
+  for (const c of cases) {
+    await t.test(c.name, async () => {
+      const server = await startFakeServer({
+        preset: 'good',
+        dropConnection: (r) => r.method === c.method && r.path === c.path && r.n === c.n,
+      });
+      try {
+        const run = await runChecks({ url: server.mcpUrl, autoConsent: true, timeoutSec: 5 });
+        const hit = run.checks.find((x) => x.id === c.check);
+        assert.equal(hit?.status, 'SKIP', JSON.stringify(hit));
+        assert.equal(hit?.detail, 'skip.no_response');
+        assert.equal(run.blocked?.stage, 'tokens');
+        assert.equal(run.blocked?.detail, 'blocked.no_response');
+        assert.equal(run.blocked?.vars?.check, c.check);
+        // 응답이 없었던 검사 뒤로는 더 진행하지 않는다
+        assert.equal(run.checks.find((x) => x.id === 'C14')?.detail, 'skip.not_reached');
+        assert.equal(run.checks.some((x) => x.status === 'FAIL'), false);
+        const v = decideVerdict(run);
+        assert.equal(v.verdict, 'inconclusive');
+        assert.equal(v.exitCode, 2);
+        assert.ok(v.fixes.includes('hint.blocked.tokens'));
+      } finally {
+        await server.close();
+      }
+    });
+  }
+});
+
 test('engine: login timeout → inconclusive', async () => {
   const server = await startFakeServer({ preset: 'good' });
   try {
@@ -151,6 +188,15 @@ test('engine: login timeout → inconclusive', async () => {
   } finally {
     await server.close();
   }
+});
+
+test('closing the callback server ends a pending login wait as "closed", not as a timeout', async () => {
+  const cb = await startCallbackServer(0, 'ok');
+  const started = Date.now();
+  const waiting = cb.waitForCode('state', 60_000);
+  await cb.close();
+  assert.deepEqual(await waiting, { ok: false, reason: 'closed' });
+  assert.ok(Date.now() - started < 5_000, 'the 60 s login timer did not keep the wait alive');
 });
 
 test('auto-consent failure ends inconclusive and the CLI exits right away (no login timer left behind)', async () => {

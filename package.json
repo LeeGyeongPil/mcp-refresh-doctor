@@ -1,6 +1,6 @@
 {
   "name": "mcp-refresh-doctor",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Diagnose why a remote MCP server keeps asking users to log in again: runs the OAuth 2.1 token lifecycle (issue, refresh, rotation, reuse, expiry) and judges server-side vs client-side cause.",
   "license": "MIT",
   "author": "LeeGyeongPil",

@@ -64,7 +64,7 @@ These practice servers are mock servers I wrote to reproduce reported failure mo
 | `--json`, `--out <file>` | Print or save the JSON report | `check ... --json` |
 | `serve --preset <name>` | Start a practice mock server on 127.0.0.1 (`--port`, `--ttl`) | `serve --preset expired-403 --ttl 5` |
 | `demo [--json]` | Check all six presets offline | `node dist/cli.js demo --json` |
-| `--lang en\|ko`, `-h`, `-v` | Output language, help, version | `node dist/cli.js --version` prints `0.1.0` |
+| `--lang en\|ko`, `-h`, `-v` | Output language, help, version | `node dist/cli.js --version` prints `0.1.2` |
 
 Exit codes: `0` server is refresh-ready (client-side cause), `1` server-side cause found, `2` inconclusive or usage error.
 
@@ -157,7 +157,7 @@ Note: the browser-login path against third-party servers could not be exercised 
 | C14 | Reusing the pre-rotation refresh token is rejected (`invalid_grant`). Runs last: a compliant server then revokes the test client's token family | OAuth 2.1, RFC 6749 §5.2 | |
 | C15 | A really expired token gets 401 `invalid_token`. Runs only with `--wait-expiry` | RFC 6750 §3.1 | S |
 
-Inconclusive (exit 2) is separate: discovery, registration or login stopped, so nothing was proven.
+Inconclusive (exit 2) is separate: discovery, registration or login stopped, or a request after login got no response (connection error or timeout), so nothing was proven. A missing response is never counted as a server FAIL.
 
 ## Settings
 
@@ -190,7 +190,7 @@ flowchart LR
 3. One login gives the first access and refresh tokens.
 4. Refresh is tried with and without the `resource` parameter, then rotation is checked.
 5. The reuse test runs last: a compliant server revokes every refresh token issued from that grant when an old one returns.
-6. A fixed rule table turns the check results into a verdict. The same input always gives the same output. FAIL in C03, C06, C08, C09, C12, C13 or C15 means server-side; stopping at discovery, registration or login means inconclusive.
+6. A fixed rule table turns the check results into a verdict. The same input always gives the same output. FAIL in C03, C06, C08, C09, C12, C13 or C15 means server-side; stopping at discovery, registration or login, or a request with no response, means inconclusive. Every request uses a fresh connection, so a reused keep-alive connection that the server already closed cannot turn into a false finding.
 
 ## When to use it
 - Good fit: a remote MCP server where users are asked to log in again and you want to know which side is at fault, with evidence.
@@ -217,6 +217,7 @@ flowchart LR
 - A browserless recheck of a saved login is planned, not built.
 - The browser-login path against third-party servers was not exercised in the build environment.
 - `--wait-expiry` waits for the full access-token lifetime (bounded by `--max-wait`, default 3700 s).
+- With access tokens that live only a few seconds (such as the practice `--ttl 5`), a very slow or busy machine can see the token expire in the middle of C08 or C12 and report it as a FAIL. C07 warns about lifetimes under 5 minutes; use a longer `--ttl` when you need C08 and C12 to be meaningful.
 - The practice presets are mocks of reported faults, not real vendor servers.
 
 ## Troubleshooting
@@ -226,6 +227,7 @@ flowchart LR
 | `Verdict: INCONCLUSIVE` and `Stopped at discovery` | Wrong URL, no network, or the endpoint answers 200 without a token | Check the URL; the endpoint must answer 401 with a Bearer challenge |
 | `error: refusing plain http ...`, exit 2 | Plain http to a non-loopback host | Use https, or `--allow-http` if you accept the risk |
 | `check` waits for a long time | Waiting for the browser login | Open the printed URL and approve; it times out to inconclusive |
+| `Stopped at token checks: C06 got no response ...` | A request after login got no answer (connection dropped or `--timeout` passed) | Run again; on a slow network raise `--timeout` |
 | `--wait-expiry` is slow | It waits for the full access-token lifetime | Lower the server's `--ttl` (practice servers) or set `--max-wait` |
 | Port already in use for `serve` | Another process on that port | Use another `--port`, or `--port 0` for a random one |
 

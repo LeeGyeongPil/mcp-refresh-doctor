@@ -54,8 +54,11 @@ export interface Served {
   stop: () => Promise<number | null>;
 }
 
-/** `serve` 를 별도 프로세스로 띄우고 MCP 주소가 출력될 때까지 기다린다(최대 startTimeoutMs) */
-export function startServe(preset: string, ttl: number, startTimeoutMs = 30_000): Promise<Served> {
+/**
+ * `serve` 를 별도 프로세스로 띄우고 MCP 주소가 출력될 때까지 기다린다(최대 startTimeoutMs).
+ * 평소 0.1초 안쪽이지만, CPU·디스크가 붐비는 러너를 흉내 낸 부하 실행에서 30초를 넘긴 적이 있어 60초로 둔다.
+ */
+export function startServe(preset: string, ttl: number, startTimeoutMs = 60_000): Promise<Served> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI, 'serve', '--preset', preset, '--port', '0', '--ttl', String(ttl), '--lang', 'en'], {
       env: cleanEnv(),

@@ -9,12 +9,12 @@ import {
   chooseScope, evaluateAsMetadata, evaluateOfflineAccess, evaluatePrm, evaluateUnauthenticated,
   asMetadataCandidates, bearerChallenge, fetchFirstJson, prmCandidates, probeUnauthenticated,
 } from './discovery.js';
-import { isLoopbackHost, stringArray, urlPolicyError } from './http.js';
+import { isLoopbackHost, noResponse, stringArray, urlPolicyError } from './http.js';
 import {
   buildAuthorizeUrl, followAutoConsent, openBrowser, startCallbackServer, type CallbackServer,
 } from './login.js';
 import { Redactor } from './mask.js';
-import { evaluateHandshake, evaluateRejection, mcpHandshake, probeRejectedToken } from './mcp.js';
+import { evaluateHandshake, evaluateRejection, mcpHandshake, probeRejectedToken, rpcNoResponse } from './mcp.js';
 import { challengeS256, createState, createVerifier, randomToken } from './pkce.js';
 import { registerClient } from './register.js';
 import { tokenEvidence, tokenRequest, type TokenResponse } from './token.js';
@@ -66,6 +66,15 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
     checks: CHECK_IDS.map((id) => results.get(id) ?? { id, status: 'SKIP', detail: 'skip.not_reached' }),
     ...(blocked ? { blocked } : {}),
   });
+  // 로그인 뒤 요청이 응답을 전혀 받지 못하면(연결 오류·시간 초과) 그 검사는 FAIL 이 아니라 SKIP 이고,
+  // 실행은 판정 불가로 끝낸다. 응답이 없었다는 것은 "서버가 갱신을 거부한다"는 증거가 아니기 때문이다
+  // (FAIL 로 적으면 C06·C08·C09·C12·C13·C15 가 서버 원인 판정을 잘못 끌어낸다).
+  const stopNoResponse = (id: CheckId, error: string | undefined): RunResult => {
+    const why = error ?? 'network';
+    record({ id, status: 'SKIP', detail: 'skip.no_response', vars: { error: why } });
+    blocked = { stage: 'tokens', detail: 'blocked.no_response', vars: { check: id, error: why } };
+    return finish();
+  };
 
   try {
     // ── C01: 토큰 없이 요청 → 401 + WWW-Authenticate ──────────────────────
@@ -198,6 +207,7 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
     // 콜백 서버는 이제 필요 없다 — 바로 닫아 포트를 돌려준다.
     await callback.close();
     callback = undefined;
+    if (noResponse(exchange.http)) return stopNoResponse('C06', exchange.http.error);
     if (!exchange.ok || !exchange.accessToken) {
       record({
         id: 'C06', status: 'FAIL', detail: 'c06.exchange_failed',
@@ -216,7 +226,9 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
     let current = { token: exchange.accessToken, issuedAt: Date.now(), expiresIn: exchange.expiresIn };
 
     // ── C08: 첫 액세스 토큰으로 MCP 핸드셰이크 ───────────────────────────
-    record(evaluateHandshake('C08', await mcpHandshake(opts.url, current.token, timeoutMs)));
+    const firstHandshake = await mcpHandshake(opts.url, current.token, timeoutMs);
+    if (firstHandshake.noResponse) return stopNoResponse('C08', firstHandshake.error);
+    record(evaluateHandshake('C08', firstHandshake));
 
     // ── C09~C12: 갱신 체인 ─────────────────────────────────────────────
     let rotated = false;
@@ -228,6 +240,7 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
         grant_type: 'refresh_token', refresh_token: rt0, client_id: clientId, resource,
       }, timeoutMs);
       remember(red, r1);
+      if (noResponse(r1.http)) return stopNoResponse('C09', r1.http.error);
       let latestRefresh = rt0;
       if (r1.ok && r1.accessToken) {
         record({ id: 'C09', status: 'PASS', detail: 'c09.ok', evidence: tokenEvidence(r1) });
@@ -244,7 +257,9 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
           });
         }
         // C12: 갱신된 토큰으로 MCP 핸드셰이크
-        record(evaluateHandshake('C12', await mcpHandshake(opts.url, current.token, timeoutMs)));
+        const refreshedHandshake = await mcpHandshake(opts.url, current.token, timeoutMs);
+        if (refreshedHandshake.noResponse) return stopNoResponse('C12', refreshedHandshake.error);
+        record(evaluateHandshake('C12', refreshedHandshake));
       } else {
         record({
           id: 'C09', status: 'FAIL', detail: 'c09.failed',
@@ -261,6 +276,7 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
         grant_type: 'refresh_token', refresh_token: latestRefresh, client_id: clientId,
       }, timeoutMs);
       remember(red, r2);
+      if (noResponse(r2.http)) return stopNoResponse('C10', r2.http.error);
       if (r2.ok && r2.accessToken) {
         record({ id: 'C10', status: 'PASS', detail: 'c10.ok', evidence: tokenEvidence(r2) });
         current = { token: r2.accessToken, issuedAt: Date.now(), expiresIn: r2.expiresIn };
@@ -277,7 +293,9 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
 
     // ── C13: 위조 토큰 → 401 invalid_token 이어야 한다 ──────────────────
     const forged = `mrd-forged-${randomToken(18)}`;
-    record(evaluateRejection('C13', await probeRejectedToken(opts.url, forged, timeoutMs)));
+    const forgedReply = await probeRejectedToken(opts.url, forged, timeoutMs);
+    if (rpcNoResponse(forgedReply)) return stopNoResponse('C13', forgedReply.error);
+    record(evaluateRejection('C13', forgedReply));
 
     // ── C15: (--wait-expiry) 실제로 만료될 때까지 기다린 뒤 같은 확인 ──────
     if (!opts.waitExpiry) {
@@ -295,7 +313,9 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
           opts.progress?.({ type: 'waiting_expiry', seconds: Math.ceil(waitMs / 1000) });
           await sleep(waitMs);
         }
-        record(evaluateRejection('C15', await probeRejectedToken(opts.url, current.token, timeoutMs)));
+        const expiredReply = await probeRejectedToken(opts.url, current.token, timeoutMs);
+        if (rpcNoResponse(expiredReply)) return stopNoResponse('C15', expiredReply.error);
+        record(evaluateRejection('C15', expiredReply));
       }
     }
 
@@ -308,6 +328,7 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
           grant_type: 'refresh_token', refresh_token: rt0, client_id: clientId, resource,
         }, timeoutMs);
         remember(red, reuse);
+        if (noResponse(reuse.http)) return stopNoResponse('C14', reuse.http.error);
         if (reuse.ok) {
           record({ id: 'C14', status: 'WARN', detail: 'c14.reuse_accepted', hint: 'hint.c14_reuse_detection', evidence: tokenEvidence(reuse) });
         } else if (reuse.error?.code === 'invalid_grant') {
