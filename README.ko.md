@@ -14,7 +14,7 @@
 
 ## 설치
 
-전제: Node.js 20 이상과 git (`brew install node git`, Debian/Ubuntu 는 `apt-get install -y nodejs npm git`. `node --version` 이 v20 이상인지 확인).
+전제: Node.js 22 이상과 git (`brew install node git`, Debian/Ubuntu 는 `apt-get install -y nodejs npm git`. `node --version` 이 v22 이상인지 확인). Debian/Ubuntu 기본 패키지는 이보다 오래된 경우가 많습니다. 그렇다면 https://nodejs.org/en/download 의 안내(또는 nvm 같은 버전 관리자)로 설치하세요.
 
 ```bash
 git clone https://github.com/LeeGyeongPil/mcp-refresh-doctor.git
@@ -27,7 +27,7 @@ npm run build
 
 ## 빠르게 시작하기
 
-서버도 네트워크도 필요 없습니다. 127.0.0.1 에 연습용 목(mock) 서버 6개를 띄워 하나씩 점검합니다.
+서버도 네트워크도 필요 없습니다. 연습용 목(mock) 서버 6개를 프로세스 안에서(in-process, 소켓·포트 없음) 돌리고, `check` 와 같은 엔진으로 하나씩 점검합니다.
 
 ```bash
 node dist/cli.js demo
@@ -66,7 +66,7 @@ node dist/cli.js demo
 | `--json`, `--out <파일>` | JSON 리포트 출력·저장 | `check ... --json` |
 | `serve --preset <이름>` | 127.0.0.1 에 연습용 목 서버 시작(`--port`, `--ttl`) | `serve --preset expired-403 --ttl 5` |
 | `demo [--json]` | 프리셋 6종을 오프라인으로 점검 | `node dist/cli.js demo --json` |
-| `--lang en\|ko`, `-h`, `-v` | 출력 언어, 도움말, 버전 | `node dist/cli.js --version` 은 `0.1.3` |
+| `--lang en\|ko`, `-h`, `-v` | 출력 언어, 도움말, 버전 | `node dist/cli.js --version` 은 `0.2.0` |
 
 종료 코드: `0` 서버는 갱신 준비 완료(클라이언트 원인), `1` 서버 원인 발견, `2` 판정 불가 또는 사용법 오류.
 
@@ -75,8 +75,8 @@ node dist/cli.js demo
 한 터미널에서 연습용 서버를 띄우고 다른 터미널에서 점검합니다. 포트가 이미 사용 중이면 다른 `--port` 를 쓰고, `check` 주소에도 `serve` 가 출력한 포트를 씁니다.
 
 ```bash
-node dist/cli.js serve --preset refresh-needs-secret --port 18787
-node dist/cli.js check http://127.0.0.1:18787/mcp --auto-consent
+node dist/cli.js serve --preset refresh-needs-secret --port 18790
+node dist/cli.js check http://127.0.0.1:18790/mcp --auto-consent
 ```
 
 ![서버 원인 판정 결과](docs/images/02-check-server-side.ko.png)
@@ -195,6 +195,10 @@ flowchart LR
 5. 재사용 시험은 맨 마지막입니다. 정상 서버는 이전 갱신 토큰이 다시 오면 같은 승인에서 발급된 갱신 토큰을 모두 폐기합니다.
 6. 고정된 규칙표가 검사 결과를 판정으로 바꿉니다. 같은 입력은 항상 같은 결과입니다. C03·C06·C08·C09·C12·C13·C15 중 FAIL 이면 서버 원인, 발견·등록·로그인에서 멈추거나 응답 없는 요청이 있으면 판정 불가입니다. 요청마다 새 연결을 쓰므로, 서버가 이미 닫은 keep-alive 연결을 다시 써서 생기는 오류가 틀린 발견 사항이 되지 않습니다.
 
+### demo 는 어떻게 도나
+
+`demo` 는 in-process 연습용 목을 씁니다. `serve` 가 실제 HTTP 뒤에 두는 인가 서버·MCP 코드를 소켓 없이 직접 부릅니다. 고정 출력이 아닙니다 — 동적 클라이언트 등록, PKCE S256, 1회용 코드, 회전, 재사용 감지와 가족 폐기, 토큰 만료가 실제로 일어납니다. 시각은 수동 시계라서, 토큰 만료를 기다리는 대신 시계를 앞으로 돌립니다. 내 클라이언트를 붙여 보려면 `serve --preset <이름>` 으로 같은 목을 127.0.0.1 의 실제 HTTP 로 띄우세요.
+
 ## 언제 쓰나
 - 이럴 때: 원격 MCP 서버에서 다시 로그인하라는 일이 반복되고, 어느 쪽 문제인지 근거와 함께 알고 싶을 때.
 - 이럴 땐 다른 도구: 서버의 도구와 호출을 대화형으로 살펴보려면 [MCP Inspector](https://github.com/modelcontextprotocol/inspector), OAuth 클라이언트 자체를 만들려면 [oauth4webapi](https://github.com/panva/oauth4webapi) 같은 OAuth 라이브러리. 이 도구는 갱신 수명주기 진단만 합니다.
@@ -239,10 +243,11 @@ flowchart LR
 ## 개발·기여
 
 ```bash
-npm test
+npm test           # CI 가 돌리는 것: 단위·in-process 시험. 소켓·자식 프로세스·실제 대기 없음
+npm run test:e2e   # 실 소켓: serve 와 check 를 127.0.0.1 의 별도 프로세스로(로컬 전용, CI 비대상)
 ```
 
-빌드 후 전체 테스트를 실행합니다(무작위 127.0.0.1 포트만 사용, 네트워크·키 불필요). 버그·제안은 이슈로 남겨 주세요. 변경 기록은 [CHANGELOG.md](CHANGELOG.md).
+`npm test` 는 빌드 후 단위·in-process 시험을 돌립니다. in-process 목과 수동 시계를 쓰므로 만료도 기다리지 않고 시계를 돌려 시험합니다. 소켓이나 자식 프로세스를 여는 시험은 가드가 `unit tests must not open sockets` 로 바로 실패시킵니다. `npm run test:e2e` 는 실 소켓에서만 보이는 것(요청마다 새 TCP 연결, 루프백 로그인 콜백, `serve` 프로세스)을 확인합니다. 둘 다 네트워크·키가 필요 없습니다. 버그·제안은 이슈로 남겨 주세요. 변경 기록은 [CHANGELOG.md](CHANGELOG.md).
 
 ## 라이선스
 

@@ -14,7 +14,7 @@ Find out why a remote MCP server keeps asking users to log in again. `mcp-refres
 
 ## Install
 
-Prerequisites: Node.js 20 or newer and git (`brew install node git`, or `apt-get install -y nodejs npm git` on Debian/Ubuntu; check that `node --version` prints v20+).
+Prerequisites: Node.js 22 or later and git (`brew install node git`, or `apt-get install -y nodejs npm git` on Debian/Ubuntu; check that `node --version` prints v22 or higher). The default Debian/Ubuntu packages are often older; if so, install Node.js from https://nodejs.org/en/download (or a version manager such as nvm).
 
 ```bash
 git clone https://github.com/LeeGyeongPil/mcp-refresh-doctor.git
@@ -27,7 +27,7 @@ The commands below use `node dist/cli.js`. After `npm link` (or once installed f
 
 ## Quick start
 
-No server and no network needed. This starts six practice mock servers on 127.0.0.1 and checks each one:
+No server and no network needed. This runs six practice mock servers in-process (no sockets, no ports) and checks each one with the same engine as `check`:
 
 ```bash
 node dist/cli.js demo
@@ -64,7 +64,7 @@ These practice servers are mock servers I wrote to reproduce reported failure mo
 | `--json`, `--out <file>` | Print or save the JSON report | `check ... --json` |
 | `serve --preset <name>` | Start a practice mock server on 127.0.0.1 (`--port`, `--ttl`) | `serve --preset expired-403 --ttl 5` |
 | `demo [--json]` | Check all six presets offline | `node dist/cli.js demo --json` |
-| `--lang en\|ko`, `-h`, `-v` | Output language, help, version | `node dist/cli.js --version` prints `0.1.3` |
+| `--lang en\|ko`, `-h`, `-v` | Output language, help, version | `node dist/cli.js --version` prints `0.2.0` |
 
 Exit codes: `0` server is refresh-ready (client-side cause), `1` server-side cause found, `2` inconclusive or usage error.
 
@@ -73,8 +73,8 @@ Exit codes: `0` server is refresh-ready (client-side cause), `1` server-side cau
 Start a practice server in one terminal and check it from another. If the port is taken, pick another `--port` and use the port `serve` prints in the `check` URL:
 
 ```bash
-node dist/cli.js serve --preset refresh-needs-secret --port 18787
-node dist/cli.js check http://127.0.0.1:18787/mcp --auto-consent
+node dist/cli.js serve --preset refresh-needs-secret --port 18790
+node dist/cli.js check http://127.0.0.1:18790/mcp --auto-consent
 ```
 
 ![Check result with a server-side verdict](docs/images/02-check-server-side.png)
@@ -113,6 +113,7 @@ node dist/cli.js check http://127.0.0.1:18791/mcp --auto-consent --wait-expiry
              expired token: got 403 — clients only start a refresh on 401
 
 Verdict: SERVER-SIDE (exit 1)
+  The server cannot support silent token refresh — users will be asked to log in again.
 Based on:
   C13 FAIL — got 403 — clients only start a refresh on 401
   C15 FAIL — expired token: got 403 — clients only start a refresh on 401
@@ -192,6 +193,10 @@ flowchart LR
 5. The reuse test runs last: a compliant server revokes every refresh token issued from that grant when an old one returns.
 6. A fixed rule table turns the check results into a verdict. The same input always gives the same output. FAIL in C03, C06, C08, C09, C12, C13 or C15 means server-side; stopping at discovery, registration or login, or a request with no response, means inconclusive. Every request uses a fresh connection, so a reused keep-alive connection that the server already closed cannot turn into a false finding.
 
+### How the demo runs
+
+`demo` uses an in-process practice mock: the same auth-server and MCP code that `serve` puts behind real HTTP is called directly, without sockets. It is not canned output — dynamic client registration, PKCE S256, one-time codes, rotation, reuse detection with family revocation and token expiry really happen. Time is a manual clock, so a wait for token expiry moves the clock instead of sleeping. `serve --preset <name>` runs the same mock over real HTTP on 127.0.0.1 for your own client.
+
 ## When to use it
 - Good fit: a remote MCP server where users are asked to log in again and you want to know which side is at fault, with evidence.
 - Other tools: to inspect a server's tools and calls interactively use the [MCP Inspector](https://github.com/modelcontextprotocol/inspector); to build the OAuth client itself use an OAuth library such as [oauth4webapi](https://github.com/panva/oauth4webapi). This tool only diagnoses the refresh lifecycle.
@@ -234,10 +239,11 @@ flowchart LR
 ## Development
 
 ```bash
-npm test
+npm test           # what CI runs: unit and in-process tests, no sockets, no child processes, no real waits
+npm run test:e2e   # real sockets: serve and check as separate processes on 127.0.0.1 (local only, not in CI)
 ```
 
-Runs the build and the full test suite (random 127.0.0.1 ports only, no network or keys). Bugs and ideas are welcome as issues. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+`npm test` builds and runs the unit and in-process tests. They use the in-process mock and a manual clock, so expiry is tested by moving the clock instead of waiting. A guard makes any test that opens a socket or a child process fail with `unit tests must not open sockets`. `npm run test:e2e` covers what only real sockets show: fresh TCP connections, the loopback login callback and the `serve` process. No network or keys are needed for either. Bugs and ideas are welcome as issues. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
