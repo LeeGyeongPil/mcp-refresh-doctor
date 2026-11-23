@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1
+
+- Korean output: the verdict line now shows the exit code in Korean (`판정: 서버 원인 (종료 코드 1)`) instead of the English word `exit`. English output is unchanged (`Verdict: SERVER-SIDE (exit 1)`).
+- CLI argument errors are clearer and follow `--lang`; all still exit 2 before any request is sent:
+  - An extra positional argument (for example `check <url> extra`) is now a usage error instead of being silently ignored.
+  - `--port` and `--redirect-port` must be whole numbers from 0 to 65535; an out-of-range value no longer prints Node's raw English error.
+  - A negative value such as `--ttl -1` is reported as "needs a non-negative number" instead of "needs a value".
+  - `--timeout 0` is refused, because every request would time out at once.
+- Tests: source comments no longer point to notes that are not in the repository, and a test checks for such references.
+
 ## 0.2.0
 
 - `demo` now runs the practice mock in-process: the same auth-server and MCP code that `serve` uses is called directly, with no sockets or ports, and a manual clock. The output is unchanged.
