@@ -20,6 +20,13 @@ export async function startCallbackServer(port: number, pageText: string): Promi
   const received = new Promise<URLSearchParams>((resolve) => {
     deliver = resolve;
   });
+  // close() 가 불리면 기다리던 waitForCode 를 바로 끝낸다.
+  // (자동 승인 실패처럼 대기 중에 일찍 끝나는 경로에서 로그인 타이머가 남아
+  //  프로세스가 로그인 대기 시간(기본 300초)만큼 종료되지 않던 문제를 막는다)
+  let stopWaiting: (() => void) | undefined;
+  const stopped = new Promise<'stopped'>((resolve) => {
+    stopWaiting = () => resolve('stopped');
+  });
 
   const server: Server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -47,8 +54,8 @@ export async function startCallbackServer(port: number, pageText: string): Promi
         timer = setTimeout(() => resolve('timeout'), timeoutMs);
       });
       try {
-        const got = await Promise.race([received, timeout]);
-        if (got === 'timeout') return { ok: false, reason: 'timeout' };
+        const got = await Promise.race([received, timeout, stopped]);
+        if (got === 'timeout' || got === 'stopped') return { ok: false, reason: 'timeout' };
         if (got.get('error')) return { ok: false, reason: 'denied', error: got.get('error') ?? '' };
         if (got.get('state') !== state) return { ok: false, reason: 'state_mismatch' };
         const code = got.get('code');
@@ -60,6 +67,7 @@ export async function startCallbackServer(port: number, pageText: string): Promi
       }
     },
     async close() {
+      stopWaiting?.(); // 대기 타이머를 풀어 이벤트 루프에 남지 않게 한다
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
