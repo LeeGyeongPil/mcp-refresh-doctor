@@ -50,6 +50,8 @@ Practice mock servers (local, offline) — they reproduce reported failure modes
 
 How to read it: **SERVER-SIDE** means the server breaks silent refresh, so users must log in again. **CLIENT-SIDE** means the server passed every decisive check, so the repeated login most likely comes from the client (it does not store the rotated refresh token, forgets `resource`, and so on). The `C..` ids are individual checks, listed in [Checks](#checks).
 
+Output language is chosen with `--lang en|ko` (or `MCP_REFRESH_DOCTOR_LANG`); the block above is the English output (`demo --lang en`).
+
 These practice servers are mock servers I wrote to reproduce reported failure modes. They are not any vendor's real server.
 
 ## Usage
@@ -64,7 +66,7 @@ These practice servers are mock servers I wrote to reproduce reported failure mo
 | `--json`, `--out <file>` | Print or save the JSON report | `check ... --json` |
 | `serve --preset <name>` | Start a practice mock server on 127.0.0.1 (`--port`, `--ttl`) | `serve --preset expired-403 --ttl 5` |
 | `demo [--json]` | Check all six presets offline | `node dist/cli.js demo --json` |
-| `--lang en\|ko`, `-h`, `-v` | Output language, help, version | `node dist/cli.js --version` prints `0.2.0` |
+| `--lang en\|ko`, `-h`, `-v` | Output language, help, version | `node dist/cli.js --version` prints `0.2.1` |
 
 Exit codes: `0` server is refresh-ready (client-side cause), `1` server-side cause found, `2` inconclusive or usage error.
 
@@ -231,6 +233,7 @@ flowchart LR
 |---|---|---|
 | `Verdict: INCONCLUSIVE` and `Stopped at discovery` | Wrong URL, no network, or the endpoint answers 200 without a token | Check the URL; the endpoint must answer 401 with a Bearer challenge |
 | `error: refusing plain http ...`, exit 2 | Plain http to a non-loopback host | Use https, or `--allow-http` if you accept the risk |
+| `error: --port needs a whole number ...`, `error: unexpected extra argument ...`, exit 2 | A bad option value (port outside 0-65535, negative `--ttl`, `--timeout 0`) or a stray extra argument | Fix the value as the message says; nothing is requested before this check |
 | `check` waits for a long time | Waiting for the browser login | Open the printed URL and approve; it times out to inconclusive |
 | `Stopped at token checks: C06 got no response ...` | A request after login got no answer (connection dropped or `--timeout` passed) | Run again; on a slow network raise `--timeout` |
 | `--wait-expiry` is slow | It waits for the full access-token lifetime | Lower the server's `--ttl` (practice servers) or set `--max-wait` |

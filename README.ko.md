@@ -66,7 +66,7 @@ node dist/cli.js demo
 | `--json`, `--out <파일>` | JSON 리포트 출력·저장 | `check ... --json` |
 | `serve --preset <이름>` | 127.0.0.1 에 연습용 목 서버 시작(`--port`, `--ttl`) | `serve --preset expired-403 --ttl 5` |
 | `demo [--json]` | 프리셋 6종을 오프라인으로 점검 | `node dist/cli.js demo --json` |
-| `--lang en\|ko`, `-h`, `-v` | 출력 언어, 도움말, 버전 | `node dist/cli.js --version` 은 `0.2.0` |
+| `--lang en\|ko`, `-h`, `-v` | 출력 언어, 도움말, 버전 | `node dist/cli.js --version` 은 `0.2.1` |
 
 종료 코드: `0` 서버는 갱신 준비 완료(클라이언트 원인), `1` 서버 원인 발견, `2` 판정 불가 또는 사용법 오류.
 
@@ -90,7 +90,7 @@ node dist/cli.js check http://127.0.0.1:18790/mcp --auto-consent
   C10  FAIL  resource 없는 갱신
              resource 없는 갱신 실패(HTTP 401, invalid_client)
   ...
-판정: 서버 원인 (exit 1)
+판정: 서버 원인 (종료 코드 1)
   서버가 조용한 토큰 갱신을 지원하지 못합니다 — 사용자는 다시 로그인하라는 요청을 받게 됩니다.
 근거:
   C09 FAIL — 갱신 실패(HTTP 401, invalid_client)
@@ -114,7 +114,7 @@ node dist/cli.js check http://127.0.0.1:18791/mcp --auto-consent --wait-expiry
   C15  FAIL  실제로 만료된 토큰에 401 invalid_token
              만료 토큰: 403 응답 — 클라이언트는 401 에서만 갱신을 시작함
 
-판정: 서버 원인 (exit 1)
+판정: 서버 원인 (종료 코드 1)
   서버가 조용한 토큰 갱신을 지원하지 못합니다 — 사용자는 다시 로그인하라는 요청을 받게 됩니다.
 근거:
   C13 FAIL — 403 응답 — 클라이언트는 401 에서만 갱신을 시작함
@@ -154,7 +154,7 @@ node dist/cli.js check https://your-server.example.com/mcp --out report.json
 | C08 | 첫 액세스 토큰으로 MCP `initialize` 성공 | MCP 인가 | S |
 | C09 | `resource` 파라미터를 실은 갱신 성공 | RFC 8707 | S |
 | C10 | `resource` 없는 갱신 성공(서버가 요구하면 WARN: 빼먹는 클라이언트는 실패) | RFC 8707 | |
-| C11 | 갱신 토큰을 사용할 때마다 회전(공개 클라이언트가 아니면 WARN) | OAuth 2.1 §4.3.1 | |
+| C11 | 갱신 토큰을 사용할 때마다 회전(회전하지 않으면 WARN, 공개 클라이언트 기준) | OAuth 2.1 §4.3.1 | |
 | C12 | 갱신된 액세스 토큰으로 MCP `initialize` 성공 | MCP 인가 | S |
 | C13 | 무효 토큰에 403·5xx 가 아닌 401 `invalid_token` | RFC 6750 §3.1 | S |
 | C14 | 회전 전 갱신 토큰 재사용을 거부(`invalid_grant`). 맨 마지막에 실행: 정상 서버는 이때 테스트 클라이언트의 토큰 묶음을 폐기 | OAuth 2.1, RFC 6749 §5.2 | |
@@ -235,6 +235,7 @@ flowchart LR
 |---|---|---|
 | `판정: 판정 불가` 와 `발견 단계에서 멈춤` | URL 오류, 네트워크 없음, 또는 토큰 없이도 200 응답 | URL 확인. 엔드포인트는 Bearer 챌린지와 함께 401 을 줘야 함 |
 | `오류: 루프백이 아닌 호스트로의 평문 http 를 거부합니다(refusing plain http) …`, 종료 2 | 루프백이 아닌 곳에 평문 http | https 를 쓰거나, 위험을 감수하면 `--allow-http` |
+| `오류: --port 에는 0~65535 사이의 정수가 필요합니다 …`, `오류: … 쓰지 않는 인자 …`, 종료 2 | 잘못된 옵션 값(0~65535 밖 포트, 음수 `--ttl`, `--timeout 0`)이나 남는 인자 | 메시지대로 값을 고침. 이 검사는 요청을 보내기 전에 끝남 |
 | `check` 가 오래 멈춰 있음 | 브라우저 로그인 대기 중 | 출력된 주소를 열어 승인. 시간이 지나면 판정 불가로 끝남 |
 | `토큰 점검 단계에서 멈춤: C06 요청이 응답을 받지 못함 …` | 로그인 뒤 요청에 답이 없음(연결 끊김 또는 `--timeout` 초과) | 다시 실행. 느린 네트워크라면 `--timeout` 을 늘림 |
 | `--wait-expiry` 가 느림 | 액세스 토큰 수명 전체를 기다림 | 연습용 서버는 `--ttl` 을 줄이거나 `--max-wait` 지정 |
