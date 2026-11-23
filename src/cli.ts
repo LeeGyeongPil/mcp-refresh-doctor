@@ -51,6 +51,28 @@ function parseNumber(value: string | undefined, fallback: number): number | unde
   return Number(value);
 }
 
+/** 값을 받는 숫자 옵션과 각각의 허용 범위 */
+type NumberRule = 'non_negative' | 'positive' | 'port';
+const NUMBER_OPTIONS: Record<string, NumberRule> = {
+  '--max-wait': 'non_negative',
+  '--timeout': 'positive', // 0 이면 모든 요청이 즉시 시간 초과로 끝나 판정을 낼 수 없다
+  '--redirect-port': 'port',
+  '--port': 'port',
+  '--ttl': 'non_negative',
+};
+
+/** 규칙을 어기면 사용자에게 보일 메시지 키를, 맞으면 undefined 를 돌려준다 */
+function numberRuleError(rule: NumberRule, value: number | undefined): string | undefined {
+  if (value === undefined) return rule === 'port' ? 'error.bad_port' : 'error.bad_number';
+  if (rule === 'positive' && value <= 0) return 'error.positive_number';
+  // 포트는 정수 0~65535 — 넘기면 Node 의 영어 원문 오류 대신 고른 언어의 안내를 낸다.
+  if (rule === 'port' && (!Number.isInteger(value) || value > 65535)) return 'error.bad_port';
+  return undefined;
+}
+
+/** 명령마다 받는 위치 인자 개수(명령 이름 포함): check <url> 은 2, serve·demo 는 1 */
+const MAX_POSITIONALS: Record<string, number> = { check: 2, serve: 1, demo: 1 };
+
 export async function main(
   argv: string[],
   env: NodeJS.ProcessEnv = process.env,
@@ -94,8 +116,13 @@ export async function main(
     const message = err instanceof Error ? err.message : String(err);
     const code = (err as { code?: string }).code;
     const name = /'(--?[\w-]+)/.exec(message)?.[1] ?? '';
+    // "--ttl -1" 은 parseArgs 가 -1 을 옵션으로 읽어 "값이 없다"고 한다. 진짜 문제는 음수이므로 그렇게 알려 준다.
+    const next = argv[argv.indexOf(name) + 1] ?? '';
+    const rule = NUMBER_OPTIONS[name];
     if (code === 'ERR_PARSE_ARGS_UNKNOWN_OPTION') io.err(t('error.unknown_option', { name }));
-    else if (code === 'ERR_PARSE_ARGS_INVALID_OPTION_VALUE') io.err(t('error.option_value', { name }));
+    else if (code === 'ERR_PARSE_ARGS_INVALID_OPTION_VALUE' && rule && /^-\d/.test(next)) {
+      io.err(t(rule === 'port' ? 'error.bad_port' : 'error.bad_number', { opt: name }));
+    } else if (code === 'ERR_PARSE_ARGS_INVALID_OPTION_VALUE') io.err(t('error.option_value', { name }));
     else io.err(t('error.args', { message }));
     return 2;
   }
@@ -124,10 +151,18 @@ export async function main(
     '--ttl': parseNumber(values.ttl, 3600),
   };
   for (const [opt, value] of Object.entries(numbers)) {
-    if (value === undefined) {
-      io.err(t('error.bad_number', { opt }));
+    const problem = numberRuleError(NUMBER_OPTIONS[opt] ?? 'non_negative', value);
+    if (problem) {
+      io.err(t(problem, { opt }));
       return 2;
     }
+  }
+
+  // 남는 위치 인자는 조용히 버리지 않고 사용법 오류로 알린다(예: check <url> extra).
+  const maxPositionals = MAX_POSITIONALS[command];
+  if (maxPositionals !== undefined && positionals.length > maxPositionals) {
+    io.err(t('error.extra_args', { cmd: command, arg: positionals[maxPositionals] ?? '' }));
+    return 2;
   }
 
   if (command === 'check') {

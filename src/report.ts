@@ -27,7 +27,9 @@ export function renderText(run: RunResult, verdict: VerdictResult, t: Translate,
     const stage = t(`stage.${run.blocked.stage}`);
     lines.push(`${t('report.blocked', { stage })}: ${t(run.blocked.detail, run.blocked.vars)}`);
   }
-  lines.push(`${t('report.verdict')}: ${t(`verdict.label.${verdict.verdict}`)} (exit ${verdict.exitCode})`);
+  // 종료 코드 표기도 메시지 표에서 가져온다(en "exit 1", ko "종료 코드 1").
+  const exitText = t('report.exit_code', { code: verdict.exitCode });
+  lines.push(`${t('report.verdict')}: ${t(`verdict.label.${verdict.verdict}`)} (${exitText})`);
   lines.push(`  ${t(`verdict.${verdict.verdict}`)}`);
   if (verdict.reasons.length > 0) {
     lines.push(`${t('report.reasons')}:`);
