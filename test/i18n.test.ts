@@ -1,9 +1,10 @@
-// AC-9: 언어 — 두 언어 키가 같고, 우선순위가 --lang > MCP_REFRESH_DOCTOR_LANG > LC_ALL/LC_MESSAGES/LANG 이며,
-// 실제 CLI 출력(도움말·demo 표)이 고른 언어로 바뀐다.
+// AC-7: 언어 — 두 언어 키가 같고, 우선순위가 --lang > MCP_REFRESH_DOCTOR_LANG > LC_ALL/LC_MESSAGES/LANG 이며,
+// 실제 CLI 출력(도움말·demo 표)이 고른 언어로 바뀐다. main() 을 같은 프로세스에서 부른다(자식 프로세스 없음).
+import './support/no-network.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MESSAGES, resolveLang, translator } from '../src/i18n.js';
-import { cleanEnv, runCli } from './helpers.js';
+import { cleanEnv, runMain } from './helpers.js';
 
 test('en and ko have exactly the same keys, with non-empty text', () => {
   const en = Object.keys(MESSAGES.en).sort();
@@ -45,32 +46,32 @@ test('translator fills placeholders and changes with the language', () => {
 });
 
 test('cli output follows --lang, the env var and the locale', async () => {
-  const helpEn = await runCli(['--help', '--lang', 'en'], cleanEnv({ LANG: 'ko_KR.UTF-8' }));
+  const helpEn = await runMain(['--help', '--lang', 'en'], cleanEnv({ LANG: 'ko_KR.UTF-8' }));
   assert.equal(helpEn.code, 0);
   assert.match(helpEn.stdout, /Usage/);
 
-  const helpKo = await runCli(['--help', '--lang', 'ko'], cleanEnv({ LANG: 'en_US.UTF-8' }));
+  const helpKo = await runMain(['--help', '--lang', 'ko'], cleanEnv({ LANG: 'en_US.UTF-8' }));
   assert.match(helpKo.stdout, /사용법/);
 
-  const viaEnv = await runCli(['--help'], cleanEnv({ MCP_REFRESH_DOCTOR_LANG: 'ko', LANG: 'en_US.UTF-8' }));
+  const viaEnv = await runMain(['--help'], cleanEnv({ MCP_REFRESH_DOCTOR_LANG: 'ko', LANG: 'en_US.UTF-8' }));
   assert.match(viaEnv.stdout, /사용법/);
 
-  const viaLocale = await runCli(['--help'], cleanEnv({ LANG: 'ko_KR.UTF-8' }));
+  const viaLocale = await runMain(['--help'], cleanEnv({ LANG: 'ko_KR.UTF-8' }));
   assert.match(viaLocale.stdout, /사용법/);
 
-  const other = await runCli(['--help'], cleanEnv({ LANG: 'de_DE.UTF-8' }));
+  const other = await runMain(['--help'], cleanEnv({ LANG: 'de_DE.UTF-8' }));
   assert.match(other.stdout, /Usage/);
 
-  const demoKo = await runCli(['demo', '--lang', 'ko'], cleanEnv());
+  const demoKo = await runMain(['demo', '--lang', 'ko'], cleanEnv());
   assert.equal(demoKo.code, 0);
   assert.match(demoKo.stdout, /판정/);
   assert.match(demoKo.stdout, /연습용 목\(mock\)/);
 
-  const demoEn = await runCli(['demo', '--lang', 'en'], cleanEnv({ LANG: 'ko_KR.UTF-8' }));
+  const demoEn = await runMain(['demo', '--lang', 'en'], cleanEnv({ LANG: 'ko_KR.UTF-8' }));
   assert.match(demoEn.stdout, /Verdict/);
   assert.match(demoEn.stdout, /Practice mock servers/);
   assert.equal(/판정/.test(demoEn.stdout), false);
 
-  const bad = await runCli(['demo', '--lang', 'fr']);
+  const bad = await runMain(['demo', '--lang', 'fr']);
   assert.equal(bad.code, 2);
 });

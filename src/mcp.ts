@@ -2,6 +2,7 @@
 // initialize → notifications/initialized → tools/list. 응답은 JSON 이거나 SSE 스트림일 수 있다.
 import { bearerChallenge } from './discovery.js';
 import { FRESH_CONNECTION, MAX_BODY_BYTES, asObject, describeError, readLimited } from './http.js';
+import { realTransport, type Transport } from './transport.js';
 import { TOOL_VERSION, type CheckId, type CheckResult } from './types.js';
 
 export const REQUESTED_PROTOCOL_VERSION = '2025-11-25';
@@ -30,6 +31,8 @@ interface RpcInput {
   sessionId?: string;
   protocolVersion?: string;
   timeoutMs: number;
+  /** 요청을 보낼 전송(기본: 실제 네트워크) */
+  transport?: Transport;
 }
 
 /** JSON-RPC 한 건을 POST 하고, id 가 맞는 응답을 JSON 또는 SSE 에서 찾아 돌려준다 */
@@ -46,7 +49,7 @@ export async function rpc(input: RpcInput): Promise<RpcReply> {
 
   let res: Response;
   try {
-    res = await fetch(input.url, {
+    res = await (input.transport ?? realTransport).fetch(input.url, {
       method: 'POST',
       headers,
       body: JSON.stringify(input.body),
@@ -156,9 +159,14 @@ export interface Handshake {
 }
 
 /** initialize → initialized → tools/list 를 한 토큰으로 끝까지 해 본다 */
-export async function mcpHandshake(url: string, token: string, timeoutMs: number): Promise<Handshake> {
+export async function mcpHandshake(
+  url: string,
+  token: string,
+  timeoutMs: number,
+  transport: Transport = realTransport,
+): Promise<Handshake> {
   const init = await rpc({
-    url, token, timeoutMs,
+    url, token, timeoutMs, transport,
     body: {
       jsonrpc: '2.0', id: 1, method: 'initialize',
       params: {
@@ -176,10 +184,10 @@ export async function mcpHandshake(url: string, token: string, timeoutMs: number
   const session = { sessionId: init.sessionId, protocolVersion };
 
   try {
-    const note = await rpc({ url, token, timeoutMs, ...session, body: { jsonrpc: '2.0', method: 'notifications/initialized' } });
+    const note = await rpc({ url, token, timeoutMs, transport, ...session, body: { jsonrpc: '2.0', method: 'notifications/initialized' } });
     if (!note.reached || note.status < 200 || note.status >= 300) return failed('initialized', note);
 
-    const list = await rpc({ url, token, timeoutMs, ...session, body: { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} } });
+    const list = await rpc({ url, token, timeoutMs, transport, ...session, body: { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} } });
     const listResult = asObject(list.message?.result);
     if (!list.reached || list.status !== 200 || !listResult) return failed('tools/list', list);
     const tools = Array.isArray(listResult.tools) ? listResult.tools.length : 0;
@@ -188,13 +196,15 @@ export async function mcpHandshake(url: string, token: string, timeoutMs: number
     };
   } finally {
     // 세션을 만든 서버에는 끝났다고 알려 서버 쪽 자원을 돌려준다(실패해도 무시).
-    if (init.sessionId) await endSession(url, token, init.sessionId, protocolVersion, timeoutMs);
+    if (init.sessionId) await endSession(url, token, init.sessionId, protocolVersion, timeoutMs, transport);
   }
 }
 
-async function endSession(url: string, token: string, sessionId: string, protocolVersion: string, timeoutMs: number): Promise<void> {
+async function endSession(
+  url: string, token: string, sessionId: string, protocolVersion: string, timeoutMs: number, transport: Transport,
+): Promise<void> {
   try {
-    const res = await fetch(url, {
+    const res = await transport.fetch(url, {
       method: 'DELETE',
       headers: {
         authorization: `Bearer ${token}`, 'mcp-session-id': sessionId, 'mcp-protocol-version': protocolVersion,
@@ -242,9 +252,11 @@ export function evaluateHandshake(id: 'C08' | 'C12', h: Handshake): CheckResult 
  * RFC 6750 §3: 401 + WWW-Authenticate: Bearer error="invalid_token" 이어야
  * 클라이언트가 "토큰이 만료됐구나 → 갱신하자"를 안다. 403·5xx 는 갱신을 시작시키지 못한다.
  */
-export async function probeRejectedToken(url: string, token: string, timeoutMs: number): Promise<RpcReply> {
+export async function probeRejectedToken(
+  url: string, token: string, timeoutMs: number, transport: Transport = realTransport,
+): Promise<RpcReply> {
   return rpc({
-    url, token, timeoutMs,
+    url, token, timeoutMs, transport,
     body: { jsonrpc: '2.0', id: 9, method: 'tools/list', params: {} },
   });
 }

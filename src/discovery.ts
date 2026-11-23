@@ -1,6 +1,7 @@
 // C01~C04: 토큰 없는 요청 → 401 도전(challenge) → 보호 자원 메타데이터(PRM, RFC 9728)
 // → 인가 서버 메타데이터(RFC 8414, OIDC well-known 대체) → offline_access 광고 확인.
 import { asObject, request, stringArray, type HttpResult } from './http.js';
+import type { Transport } from './transport.js';
 import { TOOL_VERSION, type CheckResult } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -99,12 +100,13 @@ export const INITIALIZE_BODY = JSON.stringify({
   },
 });
 
-export async function probeUnauthenticated(mcpUrl: string, timeoutMs: number): Promise<HttpResult> {
+export async function probeUnauthenticated(mcpUrl: string, timeoutMs: number, transport?: Transport): Promise<HttpResult> {
   return request(mcpUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
     body: INITIALIZE_BODY,
     timeoutMs,
+    ...(transport ? { transport } : {}),
   });
 }
 
@@ -152,10 +154,10 @@ export function asMetadataCandidates(issuer: string): string[] {
   ];
 }
 
-export async function fetchFirstJson(urls: string[], timeoutMs: number): Promise<FetchedDoc> {
+export async function fetchFirstJson(urls: string[], timeoutMs: number, transport?: Transport): Promise<FetchedDoc> {
   const tried: FetchedDoc['tried'] = [];
   for (const url of urls) {
-    const res = await request(url, { headers: { accept: 'application/json' }, timeoutMs });
+    const res = await request(url, { headers: { accept: 'application/json' }, timeoutMs, ...(transport ? { transport } : {}) });
     tried.push({ url, status: res.status, ...(res.error ? { error: res.error } : {}) });
     const doc = asObject(res.json);
     if (res.status === 200 && doc) return { url, doc, tried };

@@ -1,11 +1,13 @@
-// AC-5: 메타데이터 검사(SEP-2207)와 WWW-Authenticate 파서.
+// AC-4(일부): 메타데이터 검사(SEP-2207)와 WWW-Authenticate 파서.
+import './support/no-network.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  asMetadataCandidates, chooseScope, evaluateAsMetadata, evaluateOfflineAccess, evaluatePrm,
-  evaluateUnauthenticated, parseWwwAuthenticate, prmCandidates,
+  asMetadataCandidates, bearerChallenge, chooseScope, evaluateAsMetadata, evaluateOfflineAccess, evaluatePrm,
+  evaluateUnauthenticated, fetchFirstJson, parseWwwAuthenticate, prmCandidates, probeUnauthenticated,
 } from '../src/discovery.js';
 import type { HttpResult } from '../src/http.js';
+import { inProcess } from './helpers.js';
 
 const doc = (d: Record<string, unknown>) => ({ url: 'https://as.example/x', doc: d, tried: [] });
 
@@ -92,4 +94,18 @@ test('scope choice adds offline_access only when the auth server advertises it (
   assert.equal(chooseScope({ challengeScope: 'read write', prmScopes: ['mcp'], asScopes: ['offline_access'] }), 'read write offline_access');
   assert.equal(chooseScope({ override: 'custom', asScopes: ['offline_access'] }), 'custom');
   assert.equal(chooseScope({}), undefined);
+});
+
+test('discovery against the in-process mock: 401 challenge → PRM → AS metadata (SEP-2207)', async () => {
+  for (const [preset, c03] of [['good', 'PASS'], ['no-refresh', 'FAIL']] as const) {
+    const { fake, transport } = inProcess(preset);
+    const unauth = await probeUnauthenticated(fake.mcpUrl, 5000, transport);
+    assert.equal(evaluateUnauthenticated(unauth).status, 'PASS');
+    const challenge = bearerChallenge(unauth.headers.get('www-authenticate'));
+    const prm = await fetchFirstJson(prmCandidates(fake.mcpUrl, challenge?.params.resource_metadata), 5000, transport);
+    assert.equal(evaluatePrm(prm).status, 'PASS', 'offline_access is not in the PRM');
+    const as = await fetchFirstJson(asMetadataCandidates(fake.base), 5000, transport);
+    assert.equal(evaluateAsMetadata(as).status, c03, preset);
+    assert.equal(evaluateOfflineAccess(as.doc ?? {}).status, 'PASS');
+  }
 });

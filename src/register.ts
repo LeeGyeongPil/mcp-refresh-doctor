@@ -1,6 +1,7 @@
 // C05 — 동적 클라이언트 등록(RFC 7591).
 // 사용자의 실제 클라이언트와 섞이지 않도록 "시험용 공개 클라이언트"를 따로 등록한다.
 import { asObject, request, stringArray } from './http.js';
+import type { Transport } from './transport.js';
 import type { CheckResult } from './types.js';
 
 export interface Registration {
@@ -13,6 +14,7 @@ export async function registerClient(
   redirectUri: string,
   scope: string | undefined,
   timeoutMs: number,
+  transport?: Transport,
 ): Promise<Registration> {
   const endpoint = typeof meta.registration_endpoint === 'string' ? meta.registration_endpoint : undefined;
   if (!endpoint) {
@@ -32,6 +34,7 @@ export async function registerClient(
     headers: { 'content-type': 'application/json', accept: 'application/json' },
     body: JSON.stringify(body),
     timeoutMs,
+    ...(transport ? { transport } : {}),
   });
   const doc = asObject(res.json);
   const clientId = typeof doc?.client_id === 'string' ? doc.client_id : undefined;

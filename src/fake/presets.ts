@@ -1,5 +1,5 @@
 // 연습용 목(mock) 서버의 고장 프리셋 6종.
-// 특정 회사 서버가 아니라, 보고된 사례에서 확인된 "증상"을 재현한다(research.md 5·7절).
+// 특정 회사 서버가 아니라, 보고된 사례에서 확인된 "증상"을 재현한다.
 import type { CheckId, Status, Verdict } from '../types.js';
 
 export interface PresetBehavior {

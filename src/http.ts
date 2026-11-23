@@ -1,5 +1,6 @@
 // 진단용 HTTP 래퍼: 예외를 던지지 않고 상태·헤더·본문을 그대로 기록해 돌려준다.
 // (라이브러리처럼 오류를 예외로 감싸면 "서버가 실제로 무엇을 돌려줬는지"가 사라진다)
+import { realTransport, type Transport } from './transport.js';
 
 export interface HttpResult {
   /** 네트워크 수준에서 응답을 받았는가(상태 코드와 무관) */
@@ -20,6 +21,8 @@ export interface RequestOptions {
   body?: string;
   timeoutMs: number;
   redirect?: 'manual' | 'follow';
+  /** 요청을 보낼 전송(기본: 실제 네트워크) */
+  transport?: Transport;
 }
 
 // 본문은 진단에 필요한 만큼만 읽는다(악의적·고장 서버가 끝없이 보내도 메모리가 터지지 않게).
@@ -34,9 +37,10 @@ export const FRESH_CONNECTION = { connection: 'close' } as const;
 
 export async function request(url: string, opts: RequestOptions): Promise<HttpResult> {
   const empty = new Headers();
+  const transport = opts.transport ?? realTransport;
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await transport.fetch(url, {
       method: opts.method ?? 'GET',
       headers: { ...opts.headers, ...FRESH_CONNECTION },
       body: opts.body,

@@ -1,4 +1,5 @@
 // AC-4: 토큰 엔드포인트 오류 분류 — 각 실패가 고유 코드와 두 언어 모두에 있는 힌트 키로 매핑된다.
+import './support/no-network.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { translator } from '../src/i18n.js';

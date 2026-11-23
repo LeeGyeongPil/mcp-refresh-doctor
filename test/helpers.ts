@@ -1,8 +1,14 @@
-// 테스트 공용 도우미: CLI 를 자식 프로세스로 실행하고, serve 서버를 띄웠다가 확실히 닫는다.
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-
-export const CLI = fileURLToPath(new URL('../src/cli.js', import.meta.url));
+// 단위·in-process 시험 공용 도우미 — 소켓·자식 프로세스·실시간 대기를 쓰지 않는다.
+//  - inProcess(): 프리셋 목 handler + 수동 시계 + in-process 전송 한 벌
+//  - runMain()  : CLI 입구 main() 을 같은 프로세스에서 부르고 표준 출력·오류를 모은다
+//  - obtainAccessToken(): 목 서버에서 DCR → authorize → 코드 교환으로 액세스 토큰을 얻는다
+import { createHash } from 'node:crypto';
+import { main, type Io, type MainDeps } from '../src/cli.js';
+import { createFakeHandler, type FakeHandler } from '../src/fake/handler.js';
+import {
+  createInProcessTransport, createManualClock, type Fault, type FaultRequest, type InProcessTransport, type Route,
+} from '../src/fake/inprocess.js';
+import type { PresetName } from '../src/fake/presets.js';
 
 /** 언어 관련 환경 변수를 지운 깨끗한 환경 + 덮어쓸 값 */
 export function cleanEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
@@ -11,146 +17,87 @@ export function cleanEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv 
   return { ...env, ...extra };
 }
 
-export interface CliResult {
-  code: number | null;
+export interface MainResult {
+  code: number;
   stdout: string;
   stderr: string;
 }
 
-export function runCli(args: string[], env: NodeJS.ProcessEnv = cleanEnv(), timeoutMs = 60_000): Promise<CliResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [CLI, ...args], { env });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (d: Buffer) => (stdout += d.toString()));
-    child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      reject(new Error(`cli timed out: ${args.join(' ')}\n${stderr}`));
-    }, timeoutMs);
-    child.on('error', (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ code, stdout, stderr });
-    });
+/** main(argv, env, io) 를 같은 프로세스에서 실행한다(자식 프로세스 없음) */
+export async function runMain(args: string[], env: NodeJS.ProcessEnv = cleanEnv(), deps: MainDeps = {}): Promise<MainResult> {
+  const out: string[] = [];
+  const err: string[] = [];
+  const io: Io = { out: (text) => out.push(text), err: (text) => err.push(text) };
+  const code = await main(args, env, io, deps);
+  return { code, stdout: out.length ? out.join('\n') + '\n' : '', stderr: err.length ? err.join('\n') + '\n' : '' };
+}
+
+export interface InProcessSetup {
+  fake: FakeHandler;
+  transport: InProcessTransport;
+  /** 목 서버 요청 로그(토큰은 가려진 형태) */
+  log: string[];
+}
+
+export function inProcess(
+  preset: PresetName,
+  opts: {
+    ttlSec?: number;
+    mcpResponseMode?: 'json' | 'sse';
+    trackSecrets?: boolean;
+    faults?: (req: FaultRequest) => Fault | undefined;
+    wrap?: (handle: Route) => Route;
+  } = {},
+): InProcessSetup {
+  const clock = createManualClock();
+  const log: string[] = [];
+  const fake = createFakeHandler({
+    preset,
+    now: clock.now,
+    log: (line) => log.push(line),
+    ...(opts.ttlSec !== undefined ? { ttlSec: opts.ttlSec } : {}),
+    ...(opts.mcpResponseMode ? { mcpResponseMode: opts.mcpResponseMode } : {}),
+    ...(opts.trackSecrets ? { trackSecrets: true } : {}),
   });
-}
-
-export interface Served {
-  url: string;
-  child: ChildProcessWithoutNullStreams;
-  log: () => string;
-  /**
-   * serve 로그에 pattern 이 나타날 때까지 기다린다(최대 timeoutMs).
-   * serve 는 응답을 보낸 "뒤" 로그 줄을 쓰고, 그 줄은 다른 프로세스의 파이프를 거쳐 온다.
-   * 느린 CI 러너에서는 check 프로세스가 끝난 시점에 마지막 줄이 아직 안 왔을 수 있어
-   * 즉시 읽지 않고 기다린다. 시간이 지나도 없으면 그때까지의 로그를 돌려준다(단언이 실패하며 로그를 보여 준다).
-   */
-  waitForLog: (pattern: RegExp, timeoutMs?: number) => Promise<string>;
-  /** SIGTERM 으로 끄고 종료 코드를 돌려준다(10초 안에 안 끝나면 SIGKILL 후 null) */
-  stop: () => Promise<number | null>;
-}
-
-/**
- * `serve` 를 별도 프로세스로 띄우고 MCP 주소가 출력될 때까지 기다린다(최대 startTimeoutMs).
- * 평소 0.1초 안쪽이지만, CPU·디스크가 붐비는 러너를 흉내 낸 부하 실행에서 30초를 넘긴 적이 있어 60초로 둔다.
- */
-export function startServe(preset: string, ttl: number, startTimeoutMs = 60_000): Promise<Served> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [CLI, 'serve', '--preset', preset, '--port', '0', '--ttl', String(ttl), '--lang', 'en'], {
-      env: cleanEnv(),
-    });
-    let out = '';
-    let resolved = false;
-    const waiters = new Set<() => void>();
-    const exited = new Promise<number | null>((r) => child.on('close', (code) => r(code)));
-    // 시작이 끝없이 늦어지면 테스트가 매달리지 않고 실패하게 한다.
-    const startTimer = setTimeout(() => {
-      if (resolved) return;
-      child.kill('SIGKILL');
-      reject(new Error(`serve did not start within ${startTimeoutMs}ms: ${out}`));
-    }, startTimeoutMs);
-    const onOutput = (d: Buffer): void => {
-      out += d.toString();
-      for (const wake of waiters) wake();
-      const m = /http:\/\/127\.0\.0\.1:\d+\/mcp/.exec(out);
-      if (m && !resolved) {
-        resolved = true;
-        clearTimeout(startTimer);
-        resolve({
-          url: m[0],
-          child,
-          log: () => out,
-          waitForLog: (pattern, timeoutMs = 10_000) =>
-            new Promise<string>((done) => {
-              if (pattern.test(out)) return done(out);
-              const finish = (): void => {
-                clearTimeout(timer);
-                waiters.delete(check);
-                done(out);
-              };
-              const check = (): void => {
-                if (pattern.test(out)) finish();
-              };
-              const timer = setTimeout(finish, timeoutMs);
-              waiters.add(check);
-            }),
-          stop: async () => {
-            child.kill('SIGTERM');
-            let killTimer: NodeJS.Timeout | undefined;
-            const forced = new Promise<null>((r) => {
-              killTimer = setTimeout(() => {
-                child.kill('SIGKILL');
-                r(null);
-              }, 10_000);
-            });
-            try {
-              return await Promise.race([exited, forced]);
-            } finally {
-              clearTimeout(killTimer);
-            }
-          },
-        });
-      }
-    };
-    child.stdout.on('data', onOutput);
-    child.stderr.on('data', onOutput);
-    child.on('error', (err) => {
-      clearTimeout(startTimer);
-      reject(err);
-    });
-    void exited.then((code) => {
-      clearTimeout(startTimer);
-      if (!resolved) reject(new Error(`serve exited early (${code}): ${out}`));
-    });
+  const handle: Route = (req) => fake.handle(req);
+  const transport = createInProcessTransport({
+    routes: { [fake.base]: opts.wrap ? opts.wrap(handle) : handle },
+    clock,
+    ...(opts.faults ? { faults: opts.faults } : {}),
   });
+  return { fake, transport, log };
 }
 
-/** 연습용 서버에서 DCR → authorize(자동 승인) → 코드 교환까지 해 액세스 토큰을 얻는다 */
-export async function obtainAccessToken(base: string): Promise<string> {
+/** 목 서버에서 DCR → authorize(자동 승인) → 코드 교환까지 해 액세스 토큰을 얻는다 */
+export async function obtainAccessToken(transport: InProcessTransport, base: string): Promise<string> {
   const redirectUri = 'http://127.0.0.1:9/callback'; // 실제로 열지 않는다(Location 만 읽음)
-  const reg = (await (await fetch(`${base}/register`, {
+  const reg = (await (await transport.fetch(`${base}/register`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ redirect_uris: [redirectUri], grant_types: ['authorization_code', 'refresh_token'], token_endpoint_auth_method: 'none' }),
   })).json()) as { client_id: string };
   const verifier = 'v'.repeat(43);
-  const { createHash } = await import('node:crypto');
   const challenge = createHash('sha256').update(verifier).digest('base64url');
   const authorize = new URL(`${base}/authorize`);
   authorize.search = new URLSearchParams({
     response_type: 'code', client_id: reg.client_id, redirect_uri: redirectUri,
     code_challenge: challenge, code_challenge_method: 'S256', state: 's',
   }).toString();
-  const location = (await fetch(authorize, { redirect: 'manual' })).headers.get('location') ?? '';
+  const location = (await transport.fetch(authorize.toString(), { redirect: 'manual' })).headers.get('location') ?? '';
   const code = new URL(location).searchParams.get('code') ?? '';
-  const tok = (await (await fetch(`${base}/token`, {
+  const tok = (await (await transport.fetch(`${base}/token`, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: redirectUri, client_id: reg.client_id, code_verifier: verifier }).toString(),
   })).json()) as { access_token: string };
   return tok.access_token;
+}
+
+/** 지정한 경로·메서드 요청만 다른 응답으로 바꾸는 wrap 을 만든다(나머지는 목 handler 그대로) */
+export function override(method: string, path: string, respond: (req: Request) => Response | Promise<Response>): (handle: Route) => Route {
+  return (handle) => async (req) => {
+    const url = new URL(req.url);
+    if (req.method === method && url.pathname === path) return respond(req);
+    return handle(req);
+  };
 }

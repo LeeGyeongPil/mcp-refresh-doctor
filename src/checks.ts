@@ -4,20 +4,21 @@
 //  - 재사용 시험(C14)은 정상 서버에서 토큰 "가족" 전체를 폐기하므로 맨 마지막.
 //  - 실제 만료 시험(C15)은 가족이 폐기되기 전, 살아 있는 토큰으로 해야 의미가 있다.
 //  - 토큰 원문은 메모리에만 두고, 보고서에는 Redactor 로 가린 값만 남긴다.
-import { setTimeout as sleep } from 'node:timers/promises';
 import {
   chooseScope, evaluateAsMetadata, evaluateOfflineAccess, evaluatePrm, evaluateUnauthenticated,
   asMetadataCandidates, bearerChallenge, fetchFirstJson, prmCandidates, probeUnauthenticated,
 } from './discovery.js';
 import { isLoopbackHost, noResponse, stringArray, urlPolicyError } from './http.js';
 import {
-  buildAuthorizeUrl, followAutoConsent, openBrowser, startCallbackServer, type CallbackServer,
+  buildAuthorizeUrl, followAutoConsent, openBrowser, parseCallback, startCallbackServer,
+  type CallbackServer, type LoginOutcome,
 } from './login.js';
 import { Redactor } from './mask.js';
 import { evaluateHandshake, evaluateRejection, mcpHandshake, probeRejectedToken, rpcNoResponse } from './mcp.js';
 import { challengeS256, createState, createVerifier, randomToken } from './pkce.js';
 import { registerClient } from './register.js';
 import { tokenEvidence, tokenRequest, type TokenResponse } from './token.js';
+import { realTransport, type Transport } from './transport.js';
 import { CHECK_IDS, type Blocked, type CheckId, type CheckResult, type RunResult } from './types.js';
 
 export interface RunOptions {
@@ -37,7 +38,15 @@ export interface RunOptions {
   callbackPageText?: string;
   progress?: (event: ProgressEvent) => void;
   redactor?: Redactor;
+  /**
+   * HTTP·시각·대기를 맡을 전송. 기본은 실제 네트워크(realTransport).
+   * demo·단위 시험은 in-process 전송(fake/inprocess.ts)을 넣어 소켓 없이 같은 엔진을 돌린다.
+   */
+  transport?: Transport;
 }
+
+/** capture 전송에서 쓰는 리다이렉트 주소의 기본 포트. 실제로 열지 않는다(주소의 쿼리만 읽는다) */
+export const CAPTURE_REDIRECT_PORT = 9;
 
 export type ProgressEvent =
   | { type: 'check'; result: CheckResult }
@@ -45,7 +54,8 @@ export type ProgressEvent =
   | { type: 'waiting_expiry'; seconds: number };
 
 export async function runChecks(opts: RunOptions): Promise<RunResult> {
-  const startedAt = new Date();
+  const transport = opts.transport ?? realTransport;
+  const startedAt = new Date(transport.now());
   const timeoutMs = (opts.timeoutSec ?? 15) * 1000;
   const allowHttp = opts.allowHttp ?? false;
   const red = opts.redactor ?? new Redactor();
@@ -61,7 +71,7 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
   const finish = (): RunResult => ({
     target: opts.url,
     startedAt: startedAt.toISOString(),
-    durationMs: Date.now() - startedAt.getTime(),
+    durationMs: transport.now() - startedAt.getTime(),
     // 실행되지 못한 검사는 SKIP(진행 중단)으로 채워 항상 15줄을 낸다.
     checks: CHECK_IDS.map((id) => results.get(id) ?? { id, status: 'SKIP', detail: 'skip.not_reached' }),
     ...(blocked ? { blocked } : {}),
@@ -78,7 +88,7 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
 
   try {
     // ── C01: 토큰 없이 요청 → 401 + WWW-Authenticate ──────────────────────
-    const unauth = await probeUnauthenticated(opts.url, timeoutMs);
+    const unauth = await probeUnauthenticated(opts.url, timeoutMs, transport);
     if (!unauth.reached) {
       blocked = { stage: 'discovery', detail: 'blocked.network', vars: { url: opts.url, error: unauth.error ?? '' } };
       return finish();
@@ -91,7 +101,7 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
     const challenge = bearerChallenge(unauth.headers.get('www-authenticate'));
 
     // ── C02: 보호 자원 메타데이터(RFC 9728) ─────────────────────────────
-    const prmFetched = await fetchFirstJson(prmCandidates(opts.url, challenge?.params.resource_metadata), timeoutMs);
+    const prmFetched = await fetchFirstJson(prmCandidates(opts.url, challenge?.params.resource_metadata), timeoutMs, transport);
     record(evaluatePrm(prmFetched));
     const prm = prmFetched.doc;
     const issuer = stringArray(prm?.authorization_servers)?.[0];
@@ -107,7 +117,7 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
     const resource = typeof prm.resource === 'string' ? prm.resource : opts.url;
 
     // ── C03: 인가 서버 메타데이터의 grant_types_supported ────────────────
-    const asFetched = await fetchFirstJson(asMetadataCandidates(issuer), timeoutMs);
+    const asFetched = await fetchFirstJson(asMetadataCandidates(issuer), timeoutMs, transport);
     record(evaluateAsMetadata(asFetched));
     const meta = asFetched.doc;
     if (!meta) {
@@ -137,18 +147,26 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
     });
 
     // ── C05: 시험용 클라이언트 등록(DCR) 또는 --client-id ────────────────
-    try {
-      callback = await startCallbackServer(opts.redirectPort ?? 0, opts.callbackPageText ?? 'OK');
-    } catch (err) {
-      // 예: --redirect-port 가 이미 쓰이는 중(EADDRINUSE)
-      blocked = { stage: 'login', detail: 'blocked.callback_port', vars: { port: opts.redirectPort ?? 0, error: String((err as Error).message ?? err) } };
-      return finish();
+    // 로그인 콜백을 받을 주소부터 정한다. 실제 check 는 127.0.0.1 에 콜백 서버를 연다.
+    // capture 전송(in-process)은 서버를 열지 않고, 리다이렉트 주소만 등록해 두었다가 그 쿼리를 읽는다.
+    let redirectUri: string;
+    if (transport.callback === 'capture') {
+      redirectUri = `http://127.0.0.1:${opts.redirectPort || CAPTURE_REDIRECT_PORT}/callback`;
+    } else {
+      try {
+        callback = await startCallbackServer(opts.redirectPort ?? 0, opts.callbackPageText ?? 'OK');
+      } catch (err) {
+        // 예: --redirect-port 가 이미 쓰이는 중(EADDRINUSE)
+        blocked = { stage: 'login', detail: 'blocked.callback_port', vars: { port: opts.redirectPort ?? 0, error: String((err as Error).message ?? err) } };
+        return finish();
+      }
+      redirectUri = callback.redirectUri;
     }
     let clientId = opts.clientId;
     if (clientId) {
       record({ id: 'C05', status: 'SKIP', detail: 'c05.client_id_given' });
     } else {
-      const reg = await registerClient(meta, callback.redirectUri, scope, timeoutMs);
+      const reg = await registerClient(meta, redirectUri, scope, timeoutMs, transport);
       record(reg.result);
       clientId = reg.clientId;
       if (!clientId) {
@@ -168,26 +186,39 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
     red.add(verifier);
     red.add(state);
     const authorizeUrl = buildAuthorizeUrl(authorizeEndpoint, {
-      clientId, redirectUri: callback.redirectUri, challenge: challengeS256(verifier), state, resource,
+      clientId, redirectUri, challenge: challengeS256(verifier), state, resource,
       ...(scope ? { scope } : {}),
     });
     const loginTimeoutMs = (opts.loginTimeoutSec ?? 300) * 1000;
-    const waiting = callback.waitForCode(state, loginTimeoutMs);
+    // 루프백 콜백 서버가 있으면 리다이렉트보다 먼저 기다리기 시작해야 콜백을 놓치지 않는다.
+    const waiting = callback?.waitForCode(state, loginTimeoutMs);
+    let capturedCallback: string | undefined;
     if (opts.autoConsent) {
       if (!isLoopbackHost(new URL(authorizeEndpoint).hostname)) {
         blocked = { stage: 'login', detail: 'blocked.auto_consent_remote' };
         return finish();
       }
-      const followed = await followAutoConsent(authorizeUrl, callback.redirectUri, timeoutMs);
+      const followed = await followAutoConsent(authorizeUrl, redirectUri, timeoutMs, transport);
       if (!followed.ok) {
         blocked = { stage: 'login', detail: 'blocked.auto_consent_failed', vars: { error: followed.error } };
         return finish();
       }
+      capturedCallback = followed.callbackUrl;
     } else {
       opts.progress?.({ type: 'login_url', url: authorizeUrl });
-      if (opts.openBrowser ?? true) openBrowser(authorizeUrl);
+      if (callback && (opts.openBrowser ?? true)) openBrowser(authorizeUrl);
     }
-    const login = await waiting;
+    let login: LoginOutcome;
+    if (waiting) {
+      login = await waiting; // 실제 check: 콜백 서버가 받은 code
+    } else if (capturedCallback !== undefined) {
+      login = parseCallback(new URL(capturedCallback).searchParams, state); // capture: 리다이렉트 주소에서 바로 읽음
+    } else {
+      // capture 전송인데 자동 승인이 아니면 콜백을 받을 길이 없다.
+      // 로그인 대기 시간만큼 기다린 뒤 시간 초과로 끝낸다(수동 시계라면 시계만 돌리고 즉시 끝난다).
+      await transport.sleep(loginTimeoutMs);
+      login = { ok: false, reason: 'timeout' };
+    }
     if (!login.ok) {
       blocked = { stage: 'login', detail: `blocked.login_${login.reason}`, vars: { error: login.error ?? '' } };
       return finish();
@@ -198,14 +229,14 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
     const exchange = await tokenRequest(tokenEndpoint, {
       grant_type: 'authorization_code',
       code: login.code,
-      redirect_uri: callback.redirectUri,
+      redirect_uri: redirectUri,
       client_id: clientId,
       code_verifier: verifier,
       resource,
-    }, timeoutMs);
+    }, timeoutMs, transport);
     remember(red, exchange);
     // 콜백 서버는 이제 필요 없다 — 바로 닫아 포트를 돌려준다.
-    await callback.close();
+    await callback?.close();
     callback = undefined;
     if (noResponse(exchange.http)) return stopNoResponse('C06', exchange.http.error);
     if (!exchange.ok || !exchange.accessToken) {
@@ -223,10 +254,10 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
     record(evaluateExpiresIn(exchange.expiresIn));
 
     // 현재 살아 있는 액세스 토큰(만료 시험에 쓴다)
-    let current = { token: exchange.accessToken, issuedAt: Date.now(), expiresIn: exchange.expiresIn };
+    let current = { token: exchange.accessToken, issuedAt: transport.now(), expiresIn: exchange.expiresIn };
 
     // ── C08: 첫 액세스 토큰으로 MCP 핸드셰이크 ───────────────────────────
-    const firstHandshake = await mcpHandshake(opts.url, current.token, timeoutMs);
+    const firstHandshake = await mcpHandshake(opts.url, current.token, timeoutMs, transport);
     if (firstHandshake.noResponse) return stopNoResponse('C08', firstHandshake.error);
     record(evaluateHandshake('C08', firstHandshake));
 
@@ -238,13 +269,13 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
       // C09: resource 를 실은 refresh grant(MCP 명세가 요구하는 형태)
       const r1 = await tokenRequest(tokenEndpoint, {
         grant_type: 'refresh_token', refresh_token: rt0, client_id: clientId, resource,
-      }, timeoutMs);
+      }, timeoutMs, transport);
       remember(red, r1);
       if (noResponse(r1.http)) return stopNoResponse('C09', r1.http.error);
       let latestRefresh = rt0;
       if (r1.ok && r1.accessToken) {
         record({ id: 'C09', status: 'PASS', detail: 'c09.ok', evidence: tokenEvidence(r1) });
-        current = { token: r1.accessToken, issuedAt: Date.now(), expiresIn: r1.expiresIn };
+        current = { token: r1.accessToken, issuedAt: transport.now(), expiresIn: r1.expiresIn };
         // C11: 회전 — 새 갱신 토큰이 왔고 이전 것과 다른가
         if (r1.refreshToken && r1.refreshToken !== rt0) {
           rotated = true;
@@ -257,7 +288,7 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
           });
         }
         // C12: 갱신된 토큰으로 MCP 핸드셰이크
-        const refreshedHandshake = await mcpHandshake(opts.url, current.token, timeoutMs);
+        const refreshedHandshake = await mcpHandshake(opts.url, current.token, timeoutMs, transport);
         if (refreshedHandshake.noResponse) return stopNoResponse('C12', refreshedHandshake.error);
         record(evaluateHandshake('C12', refreshedHandshake));
       } else {
@@ -274,12 +305,12 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
       // C10: resource 없이 refresh grant(resource 를 빠뜨리는 클라이언트가 있는지 대비)
       const r2 = await tokenRequest(tokenEndpoint, {
         grant_type: 'refresh_token', refresh_token: latestRefresh, client_id: clientId,
-      }, timeoutMs);
+      }, timeoutMs, transport);
       remember(red, r2);
       if (noResponse(r2.http)) return stopNoResponse('C10', r2.http.error);
       if (r2.ok && r2.accessToken) {
         record({ id: 'C10', status: 'PASS', detail: 'c10.ok', evidence: tokenEvidence(r2) });
-        current = { token: r2.accessToken, issuedAt: Date.now(), expiresIn: r2.expiresIn };
+        current = { token: r2.accessToken, issuedAt: transport.now(), expiresIn: r2.expiresIn };
       } else if (r2.error?.code === 'invalid_target') {
         record({ id: 'C10', status: 'WARN', detail: 'c10.invalid_target', hint: 'hint.token.invalid_target', evidence: tokenEvidence(r2) });
       } else {
@@ -293,7 +324,7 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
 
     // ── C13: 위조 토큰 → 401 invalid_token 이어야 한다 ──────────────────
     const forged = `mrd-forged-${randomToken(18)}`;
-    const forgedReply = await probeRejectedToken(opts.url, forged, timeoutMs);
+    const forgedReply = await probeRejectedToken(opts.url, forged, timeoutMs, transport);
     if (rpcNoResponse(forgedReply)) return stopNoResponse('C13', forgedReply.error);
     record(evaluateRejection('C13', forgedReply));
 
@@ -304,16 +335,16 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
       skip('C15', 'skip.c15_no_expires_in');
     } else {
       // 시계 오차를 감안해 만료 시각 + 1.5초까지 기다린다.
-      const waitMs = current.issuedAt + current.expiresIn * 1000 + 1500 - Date.now();
+      const waitMs = current.issuedAt + current.expiresIn * 1000 + 1500 - transport.now();
       const maxWaitMs = (opts.maxWaitSec ?? 3700) * 1000;
       if (waitMs > maxWaitMs) {
         record({ id: 'C15', status: 'SKIP', detail: 'skip.c15_too_long', vars: { seconds: Math.ceil(waitMs / 1000) } });
       } else {
         if (waitMs > 0) {
           opts.progress?.({ type: 'waiting_expiry', seconds: Math.ceil(waitMs / 1000) });
-          await sleep(waitMs);
+          await transport.sleep(waitMs); // 수동 시계(in-process)라면 시계만 앞으로 돌리고 바로 끝난다
         }
-        const expiredReply = await probeRejectedToken(opts.url, current.token, timeoutMs);
+        const expiredReply = await probeRejectedToken(opts.url, current.token, timeoutMs, transport);
         if (rpcNoResponse(expiredReply)) return stopNoResponse('C15', expiredReply.error);
         record(evaluateRejection('C15', expiredReply));
       }
@@ -326,7 +357,7 @@ export async function runChecks(opts: RunOptions): Promise<RunResult> {
       } else {
         const reuse = await tokenRequest(tokenEndpoint, {
           grant_type: 'refresh_token', refresh_token: rt0, client_id: clientId, resource,
-        }, timeoutMs);
+        }, timeoutMs, transport);
         remember(red, reuse);
         if (noResponse(reuse.http)) return stopNoResponse('C14', reuse.http.error);
         if (reuse.ok) {

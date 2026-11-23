@@ -1,6 +1,7 @@
 // 토큰 엔드포인트 호출(코드 교환·refresh grant)과 오류 분류.
 // 진단 도구라서 응답을 예외로 바꾸지 않고 상태 코드·오류 코드를 그대로 보존한다.
 import { asObject, request, type HttpResult } from './http.js';
+import type { Transport } from './transport.js';
 
 export type TokenErrorCode =
   | 'invalid_client'
@@ -55,6 +56,7 @@ export async function tokenRequest(
   endpoint: string,
   params: Record<string, string | undefined>,
   timeoutMs: number,
+  transport?: Transport,
 ): Promise<TokenResponse> {
   const form = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) if (v !== undefined) form.set(k, v);
@@ -63,6 +65,7 @@ export async function tokenRequest(
     headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
     body: form.toString(),
     timeoutMs,
+    ...(transport ? { transport } : {}),
   });
   const body = asObject(http.json);
   const accessToken = typeof body?.access_token === 'string' ? body.access_token : undefined;

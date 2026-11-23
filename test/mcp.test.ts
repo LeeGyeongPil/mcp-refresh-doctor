@@ -1,43 +1,68 @@
-// AC-6: MCP 핸드셰이크가 JSON 응답과 SSE(text/event-stream) 응답을 모두 처리하고 Mcp-Session-Id 를 이어 보낸다.
+// AC-4(일부): MCP 핸드셰이크가 JSON 응답과 SSE(text/event-stream) 응답을 모두 처리하고 Mcp-Session-Id 를 이어 보낸다.
+// 모두 in-process — 목 handler 가 돌려주는 Response 는 fetch 가 받는 것과 같은 Web 표준 객체다.
+// (소켓 고유 동작 — 요청마다 새 TCP 연결 — 은 test/e2e/network.test.ts)
+import './support/no-network.js';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
 import { test } from 'node:test';
-import { startFakeServer } from '../src/fake/server.js';
-import { noResponse, request } from '../src/http.js';
+import { createInProcessTransport } from '../src/fake/inprocess.js';
+import { FRESH_CONNECTION, noResponse, request } from '../src/http.js';
 import { mcpHandshake, readSseUntil, rpc, rpcNoResponse } from '../src/mcp.js';
-import { obtainAccessToken } from './helpers.js';
+import { inProcess, obtainAccessToken } from './helpers.js';
 
-test('json and sse responses', async (t) => {
+test('json and sse responses (in-process)', async (t) => {
   for (const mode of ['json', 'sse'] as const) {
     await t.test(mode, async () => {
-      const lines: string[] = [];
-      const server = await startFakeServer({ preset: 'good', mcpResponseMode: mode, log: (l) => lines.push(l) });
-      try {
-        const token = await obtainAccessToken(server.base);
-        const h = await mcpHandshake(server.mcpUrl, token, 5000);
-        assert.equal(h.ok, true, JSON.stringify(h));
-        assert.equal(h.toolCount, 1);
-        assert.equal(h.sessionId, true);
-        assert.equal(h.protocolVersion, '2025-11-25');
-        // 서버는 세션 ID 가 없으면 400 을 주므로, tools/list 성공 = 세션 ID 를 이어 보냈다는 뜻.
-        assert.ok(lines.some((l) => l.includes('tools/list -> 200')));
-        assert.ok(lines.some((l) => l.includes('session closed')), 'session is closed with DELETE');
-      } finally {
-        await server.close();
-      }
+      const { fake, transport, log } = inProcess('good', { mcpResponseMode: mode });
+      const token = await obtainAccessToken(transport, fake.base);
+      const h = await mcpHandshake(fake.mcpUrl, token, 5000, transport);
+      assert.equal(h.ok, true, JSON.stringify(h));
+      assert.equal(h.toolCount, 1);
+      assert.equal(h.sessionId, true);
+      assert.equal(h.protocolVersion, '2025-11-25');
+      // 서버는 세션 ID 가 없으면 400 을 주므로, tools/list 성공 = 세션 ID 를 이어 보냈다는 뜻.
+      assert.ok(log.some((l) => l.includes('tools/list -> 200')), log.join('\n'));
+      assert.ok(log.some((l) => l.includes('notifications/initialized -> 202')));
+      assert.ok(log.some((l) => l.includes('session closed')), 'session is closed with DELETE');
     });
   }
 });
 
-test('the practice server really enforces Mcp-Session-Id (so the test above means something)', async () => {
-  const server = await startFakeServer({ preset: 'good' });
-  try {
-    const token = await obtainAccessToken(server.base);
-    const r = await rpc({ url: server.mcpUrl, token, timeoutMs: 5000, body: { jsonrpc: '2.0', id: 5, method: 'tools/list' } });
-    assert.equal(r.status, 400);
-  } finally {
-    await server.close();
-  }
+test('SSE: a notification before the reply and a stream that never closes', async () => {
+  const enc = new TextEncoder();
+  let cancelled = false;
+  let seenSession: string | null = null;
+  const transport = createInProcessTransport({
+    routes: {
+      'http://127.0.0.1:1': async (req) => {
+        seenSession = req.headers.get('mcp-session-id');
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(enc.encode('event: message\ndata: {"jsonrpc":"2.0","method":"notifications/progress"}\n\n'));
+            controller.enqueue(enc.encode('event: message\ndata: {"jsonrpc":"2.0","id":3,"result":{"tools":[]}}\n\n'));
+            // close() 를 부르지 않는다 — 서버가 스트림을 열어 둔 상황
+          },
+          cancel() {
+            cancelled = true;
+          },
+        });
+        return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      },
+    },
+  });
+  const reply = await rpc({
+    url: 'http://127.0.0.1:1/mcp', token: 't', timeoutMs: 5000, transport, sessionId: 'sess-1',
+    body: { jsonrpc: '2.0', id: 3, method: 'tools/list' },
+  });
+  assert.deepEqual(reply.message?.result, { tools: [] });
+  assert.equal(cancelled, true, 'the open stream is cancelled after the matching reply');
+  assert.equal(seenSession, 'sess-1', 'Mcp-Session-Id is forwarded');
+});
+
+test('the practice server really enforces Mcp-Session-Id (so the tests above mean something)', async () => {
+  const { fake, transport } = inProcess('good');
+  const token = await obtainAccessToken(transport, fake.base);
+  const r = await rpc({ url: fake.mcpUrl, token, timeoutMs: 5000, transport, body: { jsonrpc: '2.0', id: 5, method: 'tools/list' } });
+  assert.equal(r.status, 400);
 });
 
 test('SSE reader returns as soon as the matching response arrives, even if the stream stays open', async () => {
@@ -47,7 +72,6 @@ test('SSE reader returns as soon as the matching response arrives, even if the s
     start(controller) {
       controller.enqueue(enc.encode(': comment\r\nevent: message\r\ndata: {"jsonrpc":"2.0","method":"notifications/progress"}\r\n\r\n'));
       controller.enqueue(enc.encode('data: {"jsonrpc":"2.0",\ndata: "id":7,"result":{"ok":true}}\n\n'));
-      // close() 를 부르지 않는다 — 열린 채로 남는 스트림
     },
     cancel() {
       cancelled = true;
@@ -58,77 +82,62 @@ test('SSE reader returns as soon as the matching response arrives, even if the s
   assert.equal(cancelled, true, 'reader cancels the stream after use');
 });
 
-test('every request opens a fresh connection (an idle keep-alive socket the server closed is never reused)', async () => {
-  const headers: (string | undefined)[] = [];
-  let connections = 0;
-  const s = createServer((req, res) => {
-    headers.push(req.headers.connection);
-    req.resume();
-    req.on('end', () => {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} }));
-    });
+test('every request asks for a fresh connection (Connection: close)', async () => {
+  const seen: (string | null)[] = [];
+  const transport = createInProcessTransport({
+    routes: {
+      'http://127.0.0.1:1': async (req) => {
+        seen.push(req.headers.get('connection'));
+        return Response.json({ jsonrpc: '2.0', id: 1, result: {} });
+      },
+    },
   });
-  s.on('connection', () => connections++);
-  await new Promise<void>((r) => s.listen(0, '127.0.0.1', () => r()));
-  const url = `http://127.0.0.1:${(s.address() as { port: number }).port}/mcp`;
-  try {
-    await request(url, { timeoutMs: 5000 });
-    await request(url, { method: 'POST', body: 'a=1', timeoutMs: 5000 });
-    const reply = await rpc({ url, token: 't', timeoutMs: 5000, body: { jsonrpc: '2.0', id: 1, method: 'ping' } });
-    assert.equal(reply.status, 200);
-    assert.deepEqual(headers, ['close', 'close', 'close']);
-    assert.equal(connections, 3, 'three requests = three TCP connections');
-  } finally {
-    s.closeAllConnections();
-    await new Promise<void>((r) => s.close(() => r()));
-  }
+  await request('http://127.0.0.1:1/a', { timeoutMs: 5000, transport });
+  await request('http://127.0.0.1:1/b', { method: 'POST', body: 'a=1', timeoutMs: 5000, transport });
+  await rpc({ url: 'http://127.0.0.1:1/mcp', token: 't', timeoutMs: 5000, transport, body: { jsonrpc: '2.0', id: 1, method: 'ping' } });
+  assert.deepEqual(seen, [FRESH_CONNECTION.connection, FRESH_CONNECTION.connection, FRESH_CONNECTION.connection]);
 });
 
 test('a body cut off mid-stream counts as "no response"; a complete non-JSON body does not', async () => {
-  const s = createServer((req, res) => {
-    req.resume();
-    req.on('end', () => {
-      if (req.url === '/cut') {
-        // 상태 줄과 본문 일부만 보내고 연결을 끊는다(본문 도중 끊김)
-        res.writeHead(200, { 'content-type': 'application/json', 'content-length': '500' });
-        res.write('{"jsonrpc":"2.0","id":1,', () => res.socket?.destroy());
-        return;
-      }
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end('this is not json');
-    });
+  const transport = createInProcessTransport({
+    routes: {
+      'http://127.0.0.1:1': async (req) =>
+        new URL(req.url).pathname === '/junk'
+          ? new Response('this is not json', { status: 200, headers: { 'content-type': 'application/json' } })
+          : Response.json({ jsonrpc: '2.0', id: 1, result: { padding: 'x'.repeat(200) } }),
+    },
+    faults: (r) => (r.path === '/cut' ? 'cut-body' : undefined),
   });
-  await new Promise<void>((r) => s.listen(0, '127.0.0.1', () => r()));
-  const base = `http://127.0.0.1:${(s.address() as { port: number }).port}`;
   const body = { jsonrpc: '2.0', id: 1, method: 'ping' };
-  try {
-    const cutHttp = await request(`${base}/cut`, { method: 'POST', body: 'a=1', timeoutMs: 5000 });
-    assert.equal(cutHttp.status, 200);
-    assert.equal(noResponse(cutHttp), true, JSON.stringify(cutHttp.error));
-    const cutRpc = await rpc({ url: `${base}/cut`, token: 't', timeoutMs: 5000, body });
-    assert.equal(rpcNoResponse(cutRpc), true, JSON.stringify(cutRpc));
+  const cutHttp = await request('http://127.0.0.1:1/cut', { method: 'POST', body: 'a=1', timeoutMs: 5000, transport });
+  assert.equal(cutHttp.status, 200);
+  assert.equal(noResponse(cutHttp), true, JSON.stringify(cutHttp.error));
+  const cutRpc = await rpc({ url: 'http://127.0.0.1:1/cut', token: 't', timeoutMs: 5000, transport, body });
+  assert.equal(rpcNoResponse(cutRpc), true, JSON.stringify(cutRpc));
 
-    const junkHttp = await request(`${base}/junk`, { method: 'POST', body: 'a=1', timeoutMs: 5000 });
-    assert.equal(noResponse(junkHttp), false);
-    const junkRpc = await rpc({ url: `${base}/junk`, token: 't', timeoutMs: 5000, body });
-    assert.equal(rpcNoResponse(junkRpc), false, 'the server really answered — that is evidence');
-    assert.ok(junkRpc.error);
-  } finally {
-    s.closeAllConnections();
-    await new Promise<void>((r) => s.close(() => r()));
-  }
+  const junkHttp = await request('http://127.0.0.1:1/junk', { method: 'POST', body: 'a=1', timeoutMs: 5000, transport });
+  assert.equal(noResponse(junkHttp), false);
+  const junkRpc = await rpc({ url: 'http://127.0.0.1:1/junk', token: 't', timeoutMs: 5000, transport, body });
+  assert.equal(rpcNoResponse(junkRpc), false, 'the server really answered — that is evidence');
+  assert.ok(junkRpc.error);
 });
 
 test('handshake reports the failing step and status for a rejected token', async () => {
-  const server = await startFakeServer({ preset: 'good' });
-  try {
-    const h = await mcpHandshake(server.mcpUrl, 'not-a-real-token', 5000);
-    assert.equal(h.ok, false);
-    assert.equal(h.step, 'initialize');
-    assert.equal(h.status, 401);
-    assert.match(h.wwwAuthenticate ?? '', /invalid_token/);
-  } finally {
-    await server.close();
-  }
+  const { fake, transport } = inProcess('good');
+  const h = await mcpHandshake(fake.mcpUrl, 'not-a-real-token', 5000, transport);
+  assert.equal(h.ok, false);
+  assert.equal(h.step, 'initialize');
+  assert.equal(h.status, 401);
+  assert.match(h.wwwAuthenticate ?? '', /invalid_token/);
+});
+
+test('an expired token is rejected with 401 invalid_token once the manual clock passes its lifetime', async () => {
+  const { fake, transport, log } = inProcess('good', { ttlSec: 60 });
+  const token = await obtainAccessToken(transport, fake.base);
+  assert.equal((await mcpHandshake(fake.mcpUrl, token, 5000, transport)).ok, true);
+  await transport.sleep(61_000); // 실제로는 기다리지 않는다
+  const h = await mcpHandshake(fake.mcpUrl, token, 5000, transport);
+  assert.equal(h.status, 401);
+  assert.match(h.wwwAuthenticate ?? '', /error="invalid_token"/);
+  assert.ok(log.some((l) => l.includes('(token expired) -> 401')));
 });

@@ -1,12 +1,27 @@
 // 브라우저 로그인 1회: 127.0.0.1 루프백 콜백 서버로 인가 코드를 받는다(RFC 8252 §7.3).
 // --auto-consent 는 브라우저 대신 authorize 주소의 리다이렉트를 직접 따라간다(루프백 시험 서버 전용).
+// in-process 전송(callback: 'capture')에서는 콜백 서버를 열지 않고 리다이렉트 주소에서 code 를 바로 읽는다.
 import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { isLoopbackHost, request } from './http.js';
+import { realTransport, type Transport } from './transport.js';
 
 export type LoginOutcome =
   | { ok: true; code: string; iss?: string }
   | { ok: false; reason: 'timeout' | 'closed' | 'denied' | 'state_mismatch' | 'no_code'; error?: string };
+
+/**
+ * 콜백 주소의 쿼리(?code=…&state=…&iss=… 또는 ?error=…)를 로그인 결과로 바꾼다.
+ * 루프백 콜백 서버와 capture 경로가 같은 규칙을 쓰도록 한 곳에 둔다.
+ */
+export function parseCallback(params: URLSearchParams, state: string): LoginOutcome {
+  if (params.get('error')) return { ok: false, reason: 'denied', error: params.get('error') ?? '' };
+  if (params.get('state') !== state) return { ok: false, reason: 'state_mismatch' };
+  const code = params.get('code');
+  if (!code) return { ok: false, reason: 'no_code' };
+  const iss = params.get('iss');
+  return iss ? { ok: true, code, iss } : { ok: true, code };
+}
 
 export interface CallbackServer {
   redirectUri: string;
@@ -58,12 +73,7 @@ export async function startCallbackServer(port: number, pageText: string): Promi
         if (got === 'timeout') return { ok: false, reason: 'timeout' };
         // close() 로 대기를 멈춘 경우 — 시간 초과와 구분해 "로그인 시간 초과"라는 틀린 문구가 나오지 않게 한다.
         if (got === 'stopped') return { ok: false, reason: 'closed' };
-        if (got.get('error')) return { ok: false, reason: 'denied', error: got.get('error') ?? '' };
-        if (got.get('state') !== state) return { ok: false, reason: 'state_mismatch' };
-        const code = got.get('code');
-        if (!code) return { ok: false, reason: 'no_code' };
-        const iss = got.get('iss');
-        return iss ? { ok: true, code, iss } : { ok: true, code };
+        return parseCallback(got, state);
       } finally {
         clearTimeout(timer); // 타이머가 남아 프로세스 종료를 막지 않게
       }
@@ -97,18 +107,21 @@ export function buildAuthorizeUrl(endpoint: string, p: {
 }
 
 /**
- * 브라우저 없이 authorize 리다이렉트를 따라가 콜백 서버까지 도달시킨다.
+ * 브라우저 없이 authorize 리다이렉트를 따라가 콜백 주소까지 도달시킨다.
  * 루프백 시험 서버(serve·demo)처럼 로그인 화면 없이 바로 302 를 주는 서버에서만 쓸 수 있다.
+ * - loopback 전송: 콜백 서버를 실제로 두드려 브라우저 경로와 같은 코드 수신 경로를 탄다.
+ * - capture 전송: 콜백 주소를 두드리지 않고 그대로 돌려준다(호출한 쪽이 parseCallback 으로 읽는다).
  */
 export async function followAutoConsent(
   authorizeUrl: string,
   redirectUri: string,
   timeoutMs: number,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+  transport: Transport = realTransport,
+): Promise<{ ok: true; callbackUrl: string } | { ok: false; error: string }> {
   let url = authorizeUrl;
   for (let hop = 0; hop < 5; hop++) {
     if (!isLoopbackHost(new URL(url).hostname)) return { ok: false, error: 'non_loopback' };
-    const res = await request(url, { timeoutMs, redirect: 'manual' });
+    const res = await request(url, { timeoutMs, redirect: 'manual', transport });
     if (!res.reached) return { ok: false, error: res.error ?? 'network' };
     const location = res.headers.get('location');
     if (res.status < 300 || res.status >= 400 || !location) {
@@ -116,9 +129,9 @@ export async function followAutoConsent(
     }
     url = new URL(location, url).toString();
     if (url.startsWith(redirectUri)) {
-      // 콜백 서버를 실제로 두드려 브라우저 경로와 같은 코드 수신 경로를 탄다.
-      const cb = await request(url, { timeoutMs });
-      return cb.reached ? { ok: true } : { ok: false, error: cb.error ?? 'network' };
+      if (transport.callback === 'capture') return { ok: true, callbackUrl: url };
+      const cb = await request(url, { timeoutMs, transport });
+      return cb.reached ? { ok: true, callbackUrl: url } : { ok: false, error: cb.error ?? 'network' };
     }
   }
   return { ok: false, error: 'too_many_redirects' };

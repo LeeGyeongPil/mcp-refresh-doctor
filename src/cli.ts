@@ -13,12 +13,21 @@ import { isLoopbackHost, urlPolicyError } from './http.js';
 import { isLang, resolveLang, translator, type Translate } from './i18n.js';
 import { Redactor } from './mask.js';
 import { buildJsonReport, renderText } from './report.js';
+import type { Transport } from './transport.js';
 import { TOOL_VERSION } from './types.js';
 import { decideVerdict } from './verdict.js';
 
 export interface Io {
   out: (text: string) => void;
   err: (text: string) => void;
+}
+
+/**
+ * 시험용 주입점. 기본(빈 객체)은 실제 네트워크다.
+ * 단위 시험은 in-process 전송을 넣어 `check` 명령 전체(출력·--out·종료 코드)를 소켓 없이 돌린다.
+ */
+export interface MainDeps {
+  transport?: Transport;
 }
 
 const defaultIo: Io = {
@@ -42,7 +51,12 @@ function parseNumber(value: string | undefined, fallback: number): number | unde
   return Number(value);
 }
 
-export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env, io: Io = defaultIo): Promise<number> {
+export async function main(
+  argv: string[],
+  env: NodeJS.ProcessEnv = process.env,
+  io: Io = defaultIo,
+  deps: MainDeps = {},
+): Promise<number> {
   const langArg = findLangArg(argv);
   const lang = resolveLang(langArg, env);
   const t = translator(lang);
@@ -117,7 +131,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env,
   }
 
   if (command === 'check') {
-    return check(positionals[1], values, numbers as Record<string, number>, lang, t, io);
+    return check(positionals[1], values, numbers as Record<string, number>, lang, t, io, deps);
   }
   if (command === 'serve') {
     return serve(values.preset ?? 'good', numbers['--port'] ?? 8787, numbers['--ttl'] ?? 3600, t, io);
@@ -139,6 +153,7 @@ async function check(
   lang: 'en' | 'ko',
   t: Translate,
   io: Io,
+  deps: MainDeps,
 ): Promise<number> {
   if (!url) {
     io.err(t('error.missing_url'));
@@ -181,6 +196,7 @@ async function check(
     autoConsent,
     callbackPageText: t('callback.page'),
     redactor: red,
+    ...(deps.transport ? { transport: deps.transport } : {}),
     progress: (event) => {
       // 진행 표시는 표준 오류로 — 표준 출력(JSON 보고서)을 더럽히지 않는다.
       if (event.type === 'login_url') {
