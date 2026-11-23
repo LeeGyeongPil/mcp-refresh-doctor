@@ -64,7 +64,7 @@ These practice servers are mock servers I wrote to reproduce reported failure mo
 | `--json`, `--out <file>` | Print or save the JSON report | `check ... --json` |
 | `serve --preset <name>` | Start a practice mock server on 127.0.0.1 (`--port`, `--ttl`) | `serve --preset expired-403 --ttl 5` |
 | `demo [--json]` | Check all six presets offline | `node dist/cli.js demo --json` |
-| `--lang en\|ko`, `-h`, `-v` | Output language, help, version | `node dist/cli.js --version` prints `0.1.2` |
+| `--lang en\|ko`, `-h`, `-v` | Output language, help, version | `node dist/cli.js --version` prints `0.1.3` |
 
 Exit codes: `0` server is refresh-ready (client-side cause), `1` server-side cause found, `2` inconclusive or usage error.
 

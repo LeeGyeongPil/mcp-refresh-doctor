@@ -66,7 +66,7 @@ node dist/cli.js demo
 | `--json`, `--out <파일>` | JSON 리포트 출력·저장 | `check ... --json` |
 | `serve --preset <이름>` | 127.0.0.1 에 연습용 목 서버 시작(`--port`, `--ttl`) | `serve --preset expired-403 --ttl 5` |
 | `demo [--json]` | 프리셋 6종을 오프라인으로 점검 | `node dist/cli.js demo --json` |
-| `--lang en\|ko`, `-h`, `-v` | 출력 언어, 도움말, 버전 | `node dist/cli.js --version` 은 `0.1.2` |
+| `--lang en\|ko`, `-h`, `-v` | 출력 언어, 도움말, 버전 | `node dist/cli.js --version` 은 `0.1.3` |
 
 종료 코드: `0` 서버는 갱신 준비 완료(클라이언트 원인), `1` 서버 원인 발견, `2` 판정 불가 또는 사용법 오류.
 

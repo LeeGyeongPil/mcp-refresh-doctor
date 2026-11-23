@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3
+
+- CI: tests now run on Node 20, 22, 24 and 26. The job is split into named steps (install, build, tests, demo), so the step name shows where a run stopped. A failed test is also posted as a GitHub annotation, so the run summary shows the cause without downloading logs. The npm cache step was dropped (there are only three dev dependencies). The tool itself is unchanged.
+
 ## 0.1.2
 
 - Fix: a request after login that gets no response (connection dropped or timeout) no longer counts as a server FAIL. Before, it could produce a false `SERVER-SIDE` verdict (exit 1); now the check is SKIP and the run ends `INCONCLUSIVE` (exit 2) at "token checks", with a hint to run again.

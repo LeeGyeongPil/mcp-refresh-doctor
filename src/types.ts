@@ -54,4 +54,4 @@ export interface VerdictResult {
 }
 
 /** package.json 의 version 과 같아야 한다(test/cli.test.ts 가 확인) */
-export const TOOL_VERSION = '0.1.2';
+export const TOOL_VERSION = '0.1.3';
