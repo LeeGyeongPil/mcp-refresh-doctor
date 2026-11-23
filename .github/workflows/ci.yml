@@ -9,6 +9,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # 매달린 테스트가 기본 6시간을 잡아먹지 않게 상한을 둔다(평소 1분 안쪽)
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6

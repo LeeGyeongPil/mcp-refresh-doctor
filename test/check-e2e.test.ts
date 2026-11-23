@@ -14,11 +14,21 @@ interface Report {
 
 const status = (r: Report, id: string): string | undefined => r.checks.find((c) => c.id === id)?.status;
 
-async function checkServed(preset: string, ttl: number, extra: string[] = []): Promise<{ code: number | null; report: Report; serveLog: string }> {
+/**
+ * serve 를 띄우고 check 를 돌린다. expectLog 는 serve 로그에 나와야 하는 줄 —
+ * 다른 프로세스의 파이프로 늦게 도착할 수 있으므로 단언 전에 나타날 때까지 기다린다.
+ */
+async function checkServed(
+  preset: string,
+  ttl: number,
+  extra: string[] = [],
+  expectLog: RegExp[] = [],
+): Promise<{ code: number | null; report: Report; serveLog: string }> {
   const served = await startServe(preset, ttl);
   try {
     const r = await runCli(['check', served.url, '--auto-consent', '--json', ...extra], cleanEnv({ LANG: 'en_US.UTF-8' }));
     assert.equal(r.stderr.includes('error:'), false, r.stderr);
+    for (const pattern of expectLog) await served.waitForLog(pattern);
     return { code: r.code, report: JSON.parse(r.stdout) as Report, serveLog: served.log() };
   } finally {
     // serve 프로세스는 SIGTERM 에 소켓을 닫고 0 으로 끝나야 한다(남는 프로세스 없음).
@@ -31,7 +41,7 @@ test('check against served presets', async (t) => {
     const dir = await mkdtemp(join(tmpdir(), 'mrd-'));
     try {
       const outFile = join(dir, 'report.json');
-      const { code, report, serveLog } = await checkServed('good', 3600, ['--out', outFile]);
+      const { code, report, serveLog } = await checkServed('good', 3600, ['--out', outFile], [/reuse detected, family revoked/]);
       assert.equal(code, 0);
       assert.equal(report.verdict.verdict, 'client');
       assert.equal(status(report, 'C14'), 'PASS');
@@ -66,11 +76,16 @@ test('check against served presets', async (t) => {
     assert.equal(status(report, 'C09'), 'FAIL');
   });
 
-  await t.test('--wait-expiry against --ttl 2: good → C15 PASS, expired-403 → C15 FAIL', async () => {
+  await t.test('--wait-expiry against --ttl 5: good → C15 PASS, expired-403 → C15 FAIL', async () => {
+    // 수명 5초: 발급 직후의 C08·C12 핸드셰이크가 느린 CI 러너에서도 만료 전에 끝나도록 여유를 둔다
+    // (2초면 부하 걸린 러너에서 핸드셰이크가 만료 뒤에 닿아 good 이 server 판정으로 바뀔 위험이 있다).
     const [good, broken] = await Promise.all([
-      checkServed('good', 2, ['--wait-expiry', '--max-wait', '30']),
-      checkServed('expired-403', 2, ['--wait-expiry', '--max-wait', '30']),
+      checkServed('good', 5, ['--wait-expiry', '--max-wait', '30'], [/\(token expired\) -> 401/]),
+      checkServed('expired-403', 5, ['--wait-expiry', '--max-wait', '30'], [/\(token expired\) -> 403/]),
     ]);
+    // 실패하면 원인을 바로 볼 수 있게 C08·C12(만료 전 핸드셰이크)도 확인한다.
+    assert.equal(status(good.report, 'C08'), 'PASS', good.serveLog);
+    assert.equal(status(good.report, 'C12'), 'PASS', good.serveLog);
     assert.equal(status(good.report, 'C15'), 'PASS');
     assert.equal(good.code, 0);
     assert.equal(status(broken.report, 'C15'), 'FAIL');

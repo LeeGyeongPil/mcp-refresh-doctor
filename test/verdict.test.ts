@@ -6,6 +6,7 @@ import { runChecks } from '../src/checks.js';
 import { startFakeServer } from '../src/fake/server.js';
 import { CHECK_IDS, type Blocked, type CheckId, type CheckResult, type Status } from '../src/types.js';
 import { SERVER_DECISIVE, decideVerdict } from '../src/verdict.js';
+import { cleanEnv, runCli } from './helpers.js';
 
 function checks(overrides: Partial<Record<CheckId, Status>>, hints: Partial<Record<CheckId, string>> = {}): CheckResult[] {
   return CHECK_IDS.map((id) => ({
@@ -149,5 +150,42 @@ test('engine: login timeout → inconclusive', async () => {
     assert.equal(decideVerdict(run).verdict, 'inconclusive');
   } finally {
     await server.close();
+  }
+});
+
+test('auto-consent failure ends inconclusive and the CLI exits right away (no login timer left behind)', async () => {
+  // authorize 가 리다이렉트 대신 200(로그인 화면)을 주는 서버 — 자동 승인이 실패한다.
+  let base = '';
+  const s = createServer((req, res) => {
+    const send = (code: number, body: unknown, headers: Record<string, string> = {}): void => {
+      res.writeHead(code, { 'content-type': 'application/json', ...headers });
+      res.end(JSON.stringify(body));
+    };
+    const path = (req.url ?? '').split('?')[0];
+    if (path === '/mcp') return send(401, {}, { 'www-authenticate': `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"` });
+    if (path === '/.well-known/oauth-protected-resource/mcp') return send(200, { resource: `${base}/mcp`, authorization_servers: [base] });
+    if (path === '/.well-known/oauth-authorization-server') {
+      return send(200, {
+        issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token`,
+        registration_endpoint: `${base}/register`, grant_types_supported: ['authorization_code', 'refresh_token'],
+      });
+    }
+    if (path === '/register') return send(201, { client_id: 'c_login_page_client', token_endpoint_auth_method: 'none' });
+    if (path === '/authorize') return send(200, { page: 'login' });
+    return send(404, {});
+  });
+  await new Promise<void>((r) => s.listen(0, '127.0.0.1', () => r()));
+  base = `http://127.0.0.1:${(s.address() as { port: number }).port}`;
+  try {
+    // 로그인 대기 기본값은 300초다. 타이머가 남으면 자식 프로세스가 끝나지 않아 20초 감시에 걸린다.
+    const r = await runCli(['check', `${base}/mcp`, '--auto-consent', '--json'], cleanEnv({ LANG: 'en_US.UTF-8' }), 20_000);
+    assert.equal(r.code, 2, r.stderr);
+    const report = JSON.parse(r.stdout) as { verdict: { verdict: string }; blocked?: { stage: string; detail: string } };
+    assert.equal(report.verdict.verdict, 'inconclusive');
+    assert.equal(report.blocked?.stage, 'login');
+    assert.match(report.blocked?.detail ?? '', /no_redirect_200/);
+  } finally {
+    s.closeAllConnections();
+    await new Promise<void>((r) => s.close(() => r()));
   }
 });
