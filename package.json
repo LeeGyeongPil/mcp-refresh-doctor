@@ -1,0 +1,44 @@
+{
+  "name": "mcp-refresh-doctor",
+  "version": "0.1.0",
+  "description": "Diagnose why a remote MCP server keeps asking users to log in again: runs the OAuth 2.1 token lifecycle (issue, refresh, rotation, reuse, expiry) and judges server-side vs client-side cause.",
+  "license": "MIT",
+  "author": "LeeGyeongPil",
+  "type": "module",
+  "bin": {
+    "mcp-refresh-doctor": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "README.ko.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "mcp",
+    "oauth",
+    "oauth2.1",
+    "refresh-token",
+    "model-context-protocol",
+    "diagnostics",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LeeGyeongPil/mcp-refresh-doctor.git"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:test": "tsc -p tsconfig.test.json",
+    "test": "npm run build && npm run build:test && node --test dist-test/test/*.test.js",
+    "demo": "npm run build && node dist/cli.js demo",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "typescript": "5.9.3"
+  }
+}
