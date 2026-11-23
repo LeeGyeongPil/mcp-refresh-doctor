@@ -235,7 +235,7 @@ flowchart LR
 npm test
 ```
 
-Runs the build and 64 tests (random 127.0.0.1 ports only, no network or keys). Bugs and ideas are welcome as issues. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+Runs the build and the full test suite (random 127.0.0.1 ports only, no network or keys). Bugs and ideas are welcome as issues. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
