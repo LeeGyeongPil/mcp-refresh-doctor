@@ -1,4 +1,4 @@
-// AC-2: 점검 엔진(runChecks)을 끝까지 — in-process 목 + 수동 시계.
+// 점검 엔진(runChecks)을 끝까지 — in-process 목 + 수동 시계.
 // C15(--wait-expiry)는 토큰 수명만큼 "기다리지만" 수동 시계라 시계만 앞으로 돌고 실제로는 기다리지 않는다.
 // 그래서 수명 1시간 토큰의 실제 만료 응답도 몇 밀리초 안에, 언제나 같은 결과로 확인된다.
 import './support/no-network.js';

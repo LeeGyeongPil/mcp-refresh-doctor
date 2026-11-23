@@ -1,4 +1,4 @@
-// AC-1: 프리셋 6종을 소켓 없이(in-process 목) 점검해 판정이 기대와 같고, demo --json 은 6개 항목·종료 0.
+// demo: 프리셋 6종을 소켓 없이(in-process 목) 점검해 판정이 기대와 같고, demo --json 은 6개 항목·종료 0.
 import './support/no-network.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';

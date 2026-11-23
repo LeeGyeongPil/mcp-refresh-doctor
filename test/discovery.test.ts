@@ -1,4 +1,4 @@
-// AC-4(일부): 메타데이터 검사(SEP-2207)와 WWW-Authenticate 파서.
+// 메타데이터 검사(SEP-2207)와 WWW-Authenticate 파서.
 import './support/no-network.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';

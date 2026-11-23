@@ -1,4 +1,4 @@
-// AC-4(일부): MCP 핸드셰이크가 JSON 응답과 SSE(text/event-stream) 응답을 모두 처리하고 Mcp-Session-Id 를 이어 보낸다.
+// MCP 핸드셰이크가 JSON 응답과 SSE(text/event-stream) 응답을 모두 처리하고 Mcp-Session-Id 를 이어 보낸다.
 // 모두 in-process — 목 handler 가 돌려주는 Response 는 fetch 가 받는 것과 같은 Web 표준 객체다.
 // (소켓 고유 동작 — 요청마다 새 TCP 연결 — 은 test/e2e/network.test.ts)
 import './support/no-network.js';

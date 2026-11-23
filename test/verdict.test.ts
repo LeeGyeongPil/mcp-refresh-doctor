@@ -1,4 +1,4 @@
-// AC-3: 판정 규칙표가 결정적이고, 진행 불가 경로는 inconclusive — 고장은 in-process 전송에 결정적으로 주입한다.
+// 판정 규칙표가 결정적이고, 진행 불가 경로는 inconclusive — 고장은 in-process 전송에 결정적으로 주입한다.
 // (실제 서버를 일부러 끊던 예전 시험은 러너 부하에 따라 결과가 흔들렸다. 여기서는 정한 요청 하나만 정한 방식으로 실패한다)
 import './support/no-network.js';
 import assert from 'node:assert/strict';

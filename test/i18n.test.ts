@@ -1,10 +1,10 @@
-// AC-7: 언어 — 두 언어 키가 같고, 우선순위가 --lang > MCP_REFRESH_DOCTOR_LANG > LC_ALL/LC_MESSAGES/LANG 이며,
+// 언어 — 두 언어 키가 같고, 우선순위가 --lang > MCP_REFRESH_DOCTOR_LANG > LC_ALL/LC_MESSAGES/LANG 이며,
 // 실제 CLI 출력(도움말·demo 표)이 고른 언어로 바뀐다. main() 을 같은 프로세스에서 부른다(자식 프로세스 없음).
 import './support/no-network.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MESSAGES, resolveLang, translator } from '../src/i18n.js';
-import { cleanEnv, runMain } from './helpers.js';
+import { cleanEnv, inProcess, runMain } from './helpers.js';
 
 test('en and ko have exactly the same keys, with non-empty text', () => {
   const en = Object.keys(MESSAGES.en).sort();
@@ -74,4 +74,22 @@ test('cli output follows --lang, the env var and the locale', async () => {
 
   const bad = await runMain(['demo', '--lang', 'fr']);
   assert.equal(bad.code, 2);
+});
+
+test('the verdict line shows the exit code in the chosen language', async () => {
+  // 같은 프리셋(서버 원인, 종료 1)을 두 언어로 — 한국어 판정 줄에 영어 낱말 "exit" 가 섞이지 않는다.
+  const koSetup = inProcess('refresh-needs-secret');
+  const ko = await runMain(['check', koSetup.fake.mcpUrl, '--auto-consent', '--lang', 'ko'], cleanEnv(), { transport: koSetup.transport });
+  assert.equal(ko.code, 1);
+  const koLine = ko.stdout.split('\n').find((l) => l.startsWith('판정:')) ?? '';
+  assert.equal(koLine, '판정: 서버 원인 (종료 코드 1)');
+  assert.equal(/exit/i.test(koLine), false);
+
+  const enSetup = inProcess('refresh-needs-secret');
+  const en = await runMain(['check', enSetup.fake.mcpUrl, '--auto-consent', '--lang', 'en'], cleanEnv(), { transport: enSetup.transport });
+  assert.equal(en.code, 1);
+  assert.ok(en.stdout.split('\n').includes('Verdict: SERVER-SIDE (exit 1)'), en.stdout);
+
+  assert.equal(translator('en')('report.exit_code', { code: 2 }), 'exit 2');
+  assert.equal(translator('ko')('report.exit_code', { code: 2 }), '종료 코드 2');
 });

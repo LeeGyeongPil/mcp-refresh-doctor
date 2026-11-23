@@ -1,4 +1,4 @@
-// AC-9 (e2e, 실 소켓·자식 프로세스, `npm run test:e2e` 전용 — CI 비대상):
+// e2e ( 실 소켓·자식 프로세스, `npm run test:e2e` 전용 — CI 비대상):
 // `serve` 를 별도 프로세스(--port 0)로 띄우고 `check --auto-consent` 프로세스가 실제 HTTP 로 끝까지 돈다.
 // 종료 코드가 판정과 맞고, serve 는 SIGTERM 에 소켓을 닫고 0 으로 끝난다.
 // (실제 만료 대기 --wait-expiry 는 수동 시계를 쓰는 in-process 시험 test/check-engine.test.ts 가 맡는다)

@@ -1,4 +1,4 @@
-// AC-5: 텍스트·JSON 보고서(en·ko)와 목 handler 로그 어디에도 토큰·code·client_id 원문이 나오지 않는다.
+// 비밀값 가리기: 텍스트·JSON 보고서(en·ko)와 목 handler 로그 어디에도 토큰·code·client_id 원문이 나오지 않는다.
 import './support/no-network.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
